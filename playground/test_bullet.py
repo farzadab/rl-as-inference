@@ -2,10 +2,11 @@
 
 import pybullet_envs
 import time
+import sys
 import gym
 
 def main():
-    env = gym.make('Walker2DBulletEnv-v0')
+    env = gym.make(sys.argv[1])
     env.render(mode='human')
     state = env.reset()
     for _ in range(1000):
