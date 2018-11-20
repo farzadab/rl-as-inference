@@ -16,8 +16,12 @@ def rl_model(env):
     # run simulation with random actions from the prior
     crew = 0
     env.reset()
+    mx_pos = env.max_position * th.ones(4)
+    env.state[:4] = pyro.sample("s_0", dist.Uniform(-1 * mx_pos, mx_pos))
+    env.state[4:] = 0
     for i in range(50):
-        a = pyro.sample("a_%d" % i, dist.Uniform(-1 * th.ones(2), th.ones(2)))
+        # a = pyro.sample("a_%d" % i, dist.Uniform(-100 * th.ones(2), 100 * th.ones(2)))
+        a = pyro.sample("a_%d" % i, dist.Normal(th.zeros(2), 10 * th.ones(2)))
         _, r, _, _ = env.step(a.reshape(-1).detach().numpy())  # ignoring the `done` signal ...
         crew += r
         O_dist = dist.Bernoulli(th.FloatTensor([r]).exp())
@@ -27,7 +31,7 @@ def rl_model(env):
     return th.FloatTensor([crew])
     
 
-def rl_linear_guide(env):
+def rl_linear_guide(env, render=False):
     # Define net params, just a linear model right now:
     W = pyro.param("W", th.randn((6, 2)))
     b = pyro.param("b", th.randn((1, 2)))
@@ -38,7 +42,13 @@ def rl_linear_guide(env):
     # run simulation with "guided" actions
     crew = 0
     s = env.reset()
+    # TODO: find better way to sample states ...
+    mx_pos = env.max_position * th.ones(4)
+    env.state[:4] = pyro.sample("s_0", dist.Uniform(-1 * mx_pos, mx_pos))
+    env.state[4:] = 0
     for i in range(50):
+        if render:
+            env.render()
         a = pyro.sample("a_%d" % i, dist.Normal(th.FloatTensor(s).detach().reshape(1,-1).mm(W) + b, .2))
         s, r, _, _ = env.step(a.detach().reshape(-1).numpy())  # ignoring the `done` signal ...
         crew += r
@@ -59,11 +69,22 @@ env = PointMass(reward_style='distsq')   # the 'distsq' reward is always negativ
 # print(marginal())
 
 losses = []
-for t in range(10):
+for t in range(10000):
+    # step() takes a single gradient step and returns an estimate of the loss
     losses.append(svi.step(env))
-# The method step() takes a single gradient step and returns an estimate of the loss
+    if (t+1) % 10 == 0:
+        print('\rStep %d' % (t+1), end='')
 
-print("losses:", losses)
+W = pyro.param("W")
+b = pyro.param("b")
+
+print('W:', W)
+print('b:', b)
+
+# Visualizing the learned policy
+rl_linear_guide(env, True)
+rl_linear_guide(env, True)
+rl_linear_guide(env, True)
 
 p, = plt.plot(losses)
 plt.title("ELBO")
@@ -71,4 +92,5 @@ plt.xlabel("step")
 plt.ylabel("loss")
 p.get_figure().canvas.draw()
 p.get_figure().canvas.flush_events()
-time.sleep(100)
+plt.show()
+# time.sleep(100)

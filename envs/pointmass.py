@@ -10,9 +10,10 @@ import os.path as path
 import copy
 import time
 import gym
+import gym.spaces
 import pybullet_envs
 
-from plots.plots import ScatterPlot, QuiverPlot, Plot, SurfacePlot
+# from plots.plots import ScatterPlot, QuiverPlot, Plot, SurfacePlot
 
 class PointMass(gym.Env):
     '''
@@ -186,45 +187,45 @@ class PointMass(gym.Env):
 
         return self.viewer.render(return_rgb_array = mode=='rgb_array')
 
-    def visualize_solution(self, policy=None, value_func=None, i_iter=None):
-        '''
-            @brief Visualizes policy and value functions
-            the policy/value are visualized only for states where goal = v = 0
+    # def visualize_solution(self, policy=None, value_func=None, i_iter=None):
+    #     '''
+    #         @brief Visualizes policy and value functions
+    #         the policy/value are visualized only for states where goal = v = 0
 
-            @param policy: a function that takes the state as input and outputs the action (as numpy array)
-            @param valud_func: a function that takes the state as input and outputs the value (as float)
-        '''
-        nb_points = 10
-        xlim = [self.observation_space.low[0], self.observation_space.high[0]]
-        ylim = [self.observation_space.low[1], self.observation_space.high[1]]
+    #         @param policy: a function that takes the state as input and outputs the action (as numpy array)
+    #         @param valud_func: a function that takes the state as input and outputs the value (as float)
+    #     '''
+    #     nb_points = 10
+    #     xlim = [self.observation_space.low[0], self.observation_space.high[0]]
+    #     ylim = [self.observation_space.low[1], self.observation_space.high[1]]
 
-        if self.plot is None:
-            self.plot = Plot(1,2)
-            self.splot = SurfacePlot(
-                parent=self.plot,
-                xlim=xlim, ylim=ylim,
-                value_range=[-self.max_speed*5, self.max_speed*5]
-            )
-            self.qplot = QuiverPlot(parent=self.plot, xlim=xlim, ylim=ylim)
+    #     if self.plot is None:
+    #         self.plot = Plot(1,2)
+    #         self.splot = SurfacePlot(
+    #             parent=self.plot,
+    #             xlim=xlim, ylim=ylim,
+    #             value_range=[-self.max_speed*5, self.max_speed*5]
+    #         )
+    #         self.qplot = QuiverPlot(parent=self.plot, xlim=xlim, ylim=ylim)
         
-        x = np.linspace(xlim[0], xlim[1], nb_points)
-        y = np.linspace(ylim[0], ylim[1], nb_points)
-        points = np.array(np.meshgrid(x,y)).transpose().reshape((-1,2))
-        v = np.ones(points.shape[0])
-        d = np.ones((points.shape[0], 2))
-        for i, p in enumerate(points):
-            state = np.concatenate([p, [0] * (self.observation_space.shape[0] - 2)])
-            if value_func is not None:
-                v[i] = value_func(state)
-            if policy is not None:
-                d[i] = policy(state)
+    #     x = np.linspace(xlim[0], xlim[1], nb_points)
+    #     y = np.linspace(ylim[0], ylim[1], nb_points)
+    #     points = np.array(np.meshgrid(x,y)).transpose().reshape((-1,2))
+    #     v = np.ones(points.shape[0])
+    #     d = np.ones((points.shape[0], 2))
+    #     for i, p in enumerate(points):
+    #         state = np.concatenate([p, [0] * (self.observation_space.shape[0] - 2)])
+    #         if value_func is not None:
+    #             v[i] = value_func(state)
+    #         if policy is not None:
+    #             d[i] = policy(state)
 
-        X, Y = np.meshgrid(x,y)
-        self.splot.update(X, Y, v.reshape(len(x), -1))
-        self.qplot.update(points, d)
+    #     X, Y = np.meshgrid(x,y)
+    #     self.splot.update(X, Y, v.reshape(len(x), -1))
+    #     self.qplot.update(points, d)
         
-        # if i_iter is not None and self.writer is not None:
-        #     self.writer.add_image('Vis/Nets', self.plot.get_image(), i_iter)
+    #     # if i_iter is not None and self.writer is not None:
+    #     #     self.writer.add_image('Vis/Nets', self.plot.get_image(), i_iter)
 
     def close(self):
         if self.viewer:

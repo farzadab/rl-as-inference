@@ -2,4 +2,5 @@ pybullet
 gym
 numpy
 matplotlib
+pyro-ppl
 #torch
