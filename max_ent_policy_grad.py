@@ -25,6 +25,11 @@ from pyro.optim import Adam
 
 # to fix pythons garbage
 from copy import deepcopy
+import random
+
+torch.manual_seed(7)
+np.random.seed(7)
+random.seed(7)
 
 class simulator():
 
@@ -34,7 +39,7 @@ class simulator():
         # policy given - function of the current state
         self.policy = policy
         # environment
-        self.env = PointMass()
+        self.env = PointMass(reward_style='distsq')
         # position of goal
         #self.goal =
 
@@ -43,10 +48,10 @@ class simulator():
         env = PointMass()
         state = env.reset()
         env.render()
-        for i in range(100):
+        for i in range(200):
             next_state, reward, done, extra = env.step(self.policy(torch.FloatTensor(state)))
             state = next_state
-            print('Reward achieved:', reward)
+            print('Reward achieved:', -1 * (reward + 3))
             env.render()
             time.sleep(env.dt * 0.5)
 
@@ -87,7 +92,7 @@ class NeuralNet(nn.Module):
         self.relu2 = nn.ReLU()
 
         # output parameters for a normal_dist mean + cov
-        self.fc2 = nn.Linear(hidden_size, variable_dimention + variable_dimention**2)
+        self.fc2 = nn.Linear(hidden_size, 2*variable_dimention)
         # trajectory observation
         self.observation = None
 
@@ -106,6 +111,7 @@ class NeuralNet(nn.Module):
         return out
 
     def get_variable_dimention(self):
+
         return self.variable_dimention
 
 class Param_MultivariateNormal():
@@ -119,20 +125,15 @@ class Param_MultivariateNormal():
     def MVN_output(self, x):
         # parameter output from nueral net
         parameters = self.parameterization(x)
+
+        # dimention of output
         variable_dimention = self.parameterization.get_variable_dimention()
 
         # get mean parameters
         mean = parameters[:variable_dimention]
-        # get matrix used to create covariance matrix
-        dec = parameters[variable_dimention:].reshape((variable_dimention, variable_dimention))
-        #dec += torch.FloatTensor(np.random.rand(variable_dimention,variable_dimention))
 
-        # create covariance matrix
-        cov = mm(dec, dec.t())
-
-        # add a bit to the diagnol to remove degeneracy
-        diagnol = 0.0001*torch.ones(variable_dimention)
-        cov = torch.diag(diagnol) + cov
+        # if we want a factorized covariance
+        cov = torch.mul(torch.diag(parameters[variable_dimention:2*variable_dimention-1]),torch.diag(parameters[variable_dimention:2*variable_dimention-1]))
 
         # create MultivariateNormal data type
         mvn = MultivariateNormal(mean, cov)
@@ -144,20 +145,15 @@ class Param_MultivariateNormal():
 
         # parameter output from nueral net
         parameters = self.parameterization(x)
+
+        # dimention of output
         variable_dimention = self.parameterization.get_variable_dimention()
 
         # get mean parameters
         mean = parameters[:variable_dimention]
-        # get matrix used to create covariance matrix
-        dec = parameters[variable_dimention:].reshape((variable_dimention, variable_dimention))
-        #dec += torch.FloatTensor(np.random.rand(variable_dimention,variable_dimention))
 
-        # create covariance matrix
-        cov = mm(dec, dec.t())
-
-        # add a bit to the diagnol to remove degeneracy
-        diagnol = 0.001*torch.ones(variable_dimention)
-        cov = torch.diag(diagnol) + cov
+        # if we want a factorized covariance
+        cov = torch.mul(torch.diag(parameters[variable_dimention:2*variable_dimention-1]),torch.diag(parameters[variable_dimention:2*variable_dimention-1]))
 
         return mean, cov
 
@@ -173,8 +169,13 @@ class Param_MultivariateNormal():
         # sample from it
         return mvn.sample()
 
-    #def get_gradient_mvn():
-
+def get_mean(net, x):
+    # get MultivariateNormal data type
+    mvn = Param_MultivariateNormal(net)
+    # get get mean and covariance
+    mean, cov = mvn.get_parameters(x)
+    # return mean
+    return mean.detach()
 
 def my_gradient_function(net, trajectories):
 
@@ -188,48 +189,94 @@ def my_gradient_function(net, trajectories):
     trajectory_len = len(trajectories[0])
     trajectories_len = len(trajectories)
 
-    # iterate through time step
-    for t in range(trajectory_len):
+    # outer expectaiton
+    sample_mean_outer = 0.0
 
-        # average for a time t
+    # add all rewards ahead of it during backup
+    roll_out = 0.0
+
+    # iterate through time step
+    for t in range(trajectory_len-1, -1, -1):
+
+        # reset sample mean for time step
         sample_mean = 0.0
 
         # iterate through all trajectories
         for i in range(trajectories_len):
 
+            # get log probability of observation
+            log_q = MVN.evaluate_log_pdf(trajectories[i][t][2], torch.FloatTensor(trajectories[i][t][1]))
+
+            # update roll_out
+            roll_out +=  trajectories[i][t][3] - log_q
+
+            # fix computation graph
+            typed_roll_out = roll_out.detach()
+
+            # update sample mean for time t
+            sample_mean += log_q*typed_roll_out
+
+        sample_mean_outer += sample_mean/trajectories_len
+
+    # we want the negative of this becuase the optimization method minimizes
+
+    return sample_mean_outer
+
+def TRPO_my_gradient_function(net, trajectories):
+
+    # becuase we are drawing state-action pairs we should be able to use sample mean
+    sample_mean = 0
+
+    # initialize distribution
+    MVN = Param_MultivariateNormal(net)
+
+    # what is the length of trajectory
+    trajectory_len = len(trajectories[0])
+    trajectories_len = len(trajectories)
+
+    # iterate through time step
+    for t in range(trajectory_len):
+        print(-1)
+        # average for a time t
+        sample_mean = 0.0
+
+        # iterate through all trajectories
+        for i in range(trajectories_len):
+            print(1)
             # get r(s_t,a_t), s_t, and a_t ~ q_theta(a_t|s_t)
             state = torch.FloatTensor(trajectories[i][t][0])
             prevstate = torch.FloatTensor(trajectories[i][t][1])
             action = trajectories[i][t][2]
             reward = trajectories[i][t][3]
-
+            print(2)
             # get log probability of observation
             log_q = MVN.evaluate_log_pdf(action, prevstate)
-
+            print(3)
             # add all rewards ahead of it
-            roll_out = 0
-
+            roll_out = 0.0
+            print(4)
             for t_prime in range(t,trajectory_len):
-
+                print(4)
                 # get state info
                 state_t_prime = torch.FloatTensor(trajectories[i][t_prime][0])
                 prevstate_t_prime = torch.FloatTensor(trajectories[i][t_prime][1])
                 action_t_prime = trajectories[i][t_prime][2]
                 reward_t_prime = trajectories[i][t_prime][3]
-
+                print(6)
                 # add to roll out last term is constant.
-                roll_out += reward_t_prime - MVN.evaluate_log_pdf(action_t_prime, prevstate_t_prime).detach() - 1
-
+                roll_out += reward_t_prime.detach() - MVN.evaluate_log_pdf(action_t_prime, prevstate_t_prime).detach() #- 1
+            print(7)
+            roll_out -= reward.detach()
+            print(8)
             # add the negative log pdf of event under policy distribution
-            typed_roll_out = torch.autograd.Variable(roll_out, requires_grad=False)
-            typed_log_q = torch.autograd.Variable(roll_out, requires_grad=True)
-
+            typed_log_q = torch.autograd.Variable(log_q, requires_grad=True)
+            print(9)
             # add sample to expectation
-            sample_mean += typed_log_q*typed_roll_out
-
+            sample_mean += typed_log_q*roll_out
+        print(10)
         # normalize then add to outer expection for a given time t
         sample_mean += sample_mean/trajectories_len
-
+    print(11)
     # we want the negative of this becuase the optimization method minimizes
     return sample_mean/trajectory_len
 
@@ -263,7 +310,6 @@ def my_objective_function(net, trajectories):
             # get log probability of observation
             log_q = MVN.evaluate_log_pdf(action, prevstate)
 
-
             # add to roll out last term is constant.
             sample_mean += reward - MVN.evaluate_log_pdf(action, prevstate)
 
@@ -273,6 +319,31 @@ def my_objective_function(net, trajectories):
     # we want the negative of this becuase the optimization method minimizes
     return sample_mean/trajectory_len
 
+def cumulative_reward(net, trajectories):
+    # becuase we are drawing state-action pairs we should be able to use sample mean
+    sample_mean = 0
+
+    # initialize distribution
+    MVN = Param_MultivariateNormal(net)
+
+    # what is the length of trajectory
+    trajectory_len = len(trajectories[0])
+    trajectories_len = len(trajectories)
+
+    # average for a time t
+    sample_mean = 0.0
+
+    # iterate through all trajectories
+    for i in range(trajectories_len):
+
+        # iterate through time step
+        for t in range(trajectory_len):
+
+            # add to roll out last term is constant.
+            sample_mean += trajectories[i][t][3]
+
+    # we want the negative of this becuase the optimization method minimizes
+    return sample_mean/trajectory_len
 
 def train_network(epochs, trajectories_per_epoch, trajectory_length):
 
@@ -280,7 +351,8 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
     net = NeuralNet()
 
     # set optimizer
-    optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.9)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
+    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.1)
     #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
 
     # iterate for set number of epochs
@@ -304,8 +376,10 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
         # approximate expectation
         expected_loss = my_gradient_function(net, trajectories)
 
+        print( my_gradient_function(net, trajectories) )
+
         # see how the objective function is improving
-        average_reward = my_objective_function(net, trajectories)
+        average_reward = cumulative_reward(net, trajectories)
 
         # zero the parameter gradients
         optimizer.zero_grad()
@@ -318,7 +392,8 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
 
         # print loss values
         print("epoch: " + str(epoch))
-        print("current loss: "  + str(average_reward))
+        # print("current loss: "  + str(average_reward))
+        print("current cumulative reward: "  + str(average_reward))
         print("current loss gradient: "  + str(expected_loss))
         # except:
         #     print("numerical issues: (probably) \n Lapack Error in potrf : the leading minor of order 2 is not positive definite at /Users/soumith/code/builder/wheel/pytorch-src/aten/src/TH/generic/THTensorLapack.cpp:626")
@@ -326,12 +401,11 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
     print('Finished Training!')
     return net
 
-
 def main():
     # pick the number of epochs / trajectories to average over ect.
-    epochs = 125
-    trajectories_per_epoch = 10
-    trajectory_length = 100
+    epochs = 10
+    trajectories_per_epoch = 50
+    trajectory_length = 50
 
     # train the network
     trained_net = train_network(epochs, trajectories_per_epoch, trajectory_length)
@@ -340,12 +414,16 @@ def main():
     MVN = Param_MultivariateNormal(trained_net)
 
     # create policy distribution
-    policy = lambda s_t: MVN.sample(torch.tensor(s_t))
+    # policy = lambda s_t: MVN.sample(torch.tensor(s_t))
+    policy = lambda s_t: get_mean(trained_net, torch.tensor(s_t))
 
     # set up simulation
     sim = simulator(100, policy)
+
     # see what parameters look like.
     #print(MVN.get_parameters())
+
+    input("Press Enter to see what the trajectories look like...")
 
     # create a simulation or 10
     for i in range(10):
