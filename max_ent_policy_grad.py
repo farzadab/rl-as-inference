@@ -3,6 +3,7 @@
 # gym environment
 from envs.pointmass import PointMass
 import time
+import datetime
 
 # torch stuff for nueral networks
 import os
@@ -40,8 +41,6 @@ class simulator():
         self.policy = policy
         # environment
         self.env = PointMass(reward_style='distsq')
-        # position of goal
-        #self.goal =
 
     def render_trajectory(self):
 
@@ -51,7 +50,7 @@ class simulator():
         for i in range(200):
             next_state, reward, done, extra = env.step(self.policy(torch.FloatTensor(state)))
             state = next_state
-            print('Reward achieved:', reward)
+            print('Reward achieved:', -reward)
             env.render()
             time.sleep(env.dt * 0.5)
 
@@ -70,7 +69,7 @@ class simulator():
             prevstate = state
             state, reward, done, extra = self.env.step(action)
             # need to update draw from action
-            trajectory.append([state, prevstate, action, reward])
+            trajectory.append([state, prevstate, action, -reward])
 
         return trajectory
 
@@ -91,7 +90,7 @@ class NeuralNet(nn.Module):
         # nonlinear activation functions
         self.relu2 = nn.ReLU()
 
-        # output parameters for a normal_dist mean + cov
+        # output parameters for a normal_dist mean + diagnol cov
         self.fc2 = nn.Linear(hidden_size, 2*variable_dimention)
         # trajectory observation
         self.observation = None
@@ -133,7 +132,7 @@ class Param_MultivariateNormal():
         mean = parameters[:variable_dimention]
 
         # if we want a factorized covariance
-        cov = torch.mul(torch.diag(parameters[variable_dimention:2*variable_dimention-1]),torch.diag(parameters[variable_dimention:2*variable_dimention-1]))
+        cov = torch.mul(torch.diag(parameters[variable_dimention:]),torch.diag(parameters[variable_dimention:]))
 
         # create MultivariateNormal data type
         mvn = MultivariateNormal(mean, cov)
@@ -153,7 +152,7 @@ class Param_MultivariateNormal():
         mean = parameters[:variable_dimention]
 
         # if we want a factorized covariance
-        cov = torch.mul(torch.diag(parameters[variable_dimention:2*variable_dimention-1]),torch.diag(parameters[variable_dimention:2*variable_dimention-1]))
+        cov = torch.mul(torch.diag(parameters[variable_dimention:]),torch.diag(parameters[variable_dimention:]))
 
         return mean, cov
 
@@ -200,6 +199,7 @@ def my_gradient_function(net, trajectories):
 
         # reset sample mean for time step
         sample_mean = 0.0
+        time_step_roll_out = 0.0
 
         # iterate through all trajectories
         for i in range(trajectories_len):
@@ -208,14 +208,18 @@ def my_gradient_function(net, trajectories):
             log_q = MVN.evaluate_log_pdf(trajectories[i][t][2], torch.FloatTensor(trajectories[i][t][1]))
 
             # update roll_out
-            roll_out = roll_out + trajectories[i][t][3] - log_q
+            time_step_roll_out = time_step_roll_out + trajectories[i][t][3] - log_q
 
             # fix computation graph
-            typed_roll_out = roll_out.detach()
+            typed_roll_out = time_step_roll_out.detach() + roll_out
 
             # update sample mean for time t
             sample_mean = sample_mean + log_q*typed_roll_out
 
+        # add the average roll out in front of current roll out.
+        roll_out = roll_out + typed_roll_out/trajectories_len
+
+        # add this average to out sum
         sample_mean_outer = sample_mean_outer + sample_mean/trajectories_len
 
     # we want the negative of this becuase the optimization method minimizes
@@ -287,7 +291,7 @@ def cumulative_reward(net, trajectories):
             sample_mean += trajectories[i][t][3]
 
     # we want the negative of this becuase the optimization method minimizes
-    return sample_mean/trajectory_len
+    return sample_mean/trajectories_len
 
 def train_network(epochs, trajectories_per_epoch, trajectory_length):
 
@@ -295,8 +299,8 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
     net = NeuralNet()
 
     # set optimizer
-    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
-    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.1)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-2)
+    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.5)
     #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
 
     # iterate for set number of epochs
@@ -320,11 +324,6 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
         # approximate expectation
         expected_loss = my_gradient_function(net, trajectories)
 
-        print( my_gradient_function(net, trajectories) )
-
-        # see how the objective function is improving
-        average_reward = cumulative_reward(net, trajectories)
-
         # zero the parameter gradients
         optimizer.zero_grad()
 
@@ -336,8 +335,11 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
 
         # print loss values
         print("epoch: " + str(epoch))
-        # print("current loss: "  + str(average_reward))
-        print("current cumulative reward: "  + str(average_reward))
+        print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
+        # see how the objective function is improving
+        if epoch%10==0:
+            average_reward = cumulative_reward(net, trajectories)
+            print("current cumulative reward: "  + str(average_reward))
         print("current loss gradient: "  + str(expected_loss))
         # except:
         #     print("numerical issues: (probably) \n Lapack Error in potrf : the leading minor of order 2 is not positive definite at /Users/soumith/code/builder/wheel/pytorch-src/aten/src/TH/generic/THTensorLapack.cpp:626")
@@ -347,8 +349,8 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
 
 def main():
     # pick the number of epochs / trajectories to average over ect.
-    epochs = 10
-    trajectories_per_epoch = 50
+    epochs = 100
+    trajectories_per_epoch = 750
     trajectory_length = 50
 
     # train the network
