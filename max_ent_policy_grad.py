@@ -45,20 +45,20 @@ class simulator():
 
     def render_trajectory(self):
 
-        env = PointMass()
+        env = PointMass(reward_style='distsq')
         state = env.reset()
         env.render()
         for i in range(200):
             next_state, reward, done, extra = env.step(self.policy(torch.FloatTensor(state)))
             state = next_state
-            print('Reward achieved:', -1 * (reward + 3))
+            print('Reward achieved:', reward)
             env.render()
             time.sleep(env.dt * 0.5)
 
     def simulate_trajectory(self):
 
         # initialize environment
-        env = PointMass()
+        env = PointMass(reward_style='distsq')
         state = self.env.reset()
 
         # initialize trajectory
@@ -208,78 +208,22 @@ def my_gradient_function(net, trajectories):
             log_q = MVN.evaluate_log_pdf(trajectories[i][t][2], torch.FloatTensor(trajectories[i][t][1]))
 
             # update roll_out
-            roll_out +=  trajectories[i][t][3] - log_q
+            roll_out = roll_out + trajectories[i][t][3] - log_q
 
             # fix computation graph
             typed_roll_out = roll_out.detach()
 
             # update sample mean for time t
-            sample_mean += log_q*typed_roll_out
+            sample_mean = sample_mean + log_q*typed_roll_out
 
-        sample_mean_outer += sample_mean/trajectories_len
+        sample_mean_outer = sample_mean_outer + sample_mean/trajectories_len
 
     # we want the negative of this becuase the optimization method minimizes
 
     return sample_mean_outer
 
 def TRPO_my_gradient_function(net, trajectories):
-
-    # becuase we are drawing state-action pairs we should be able to use sample mean
-    sample_mean = 0
-
-    # initialize distribution
-    MVN = Param_MultivariateNormal(net)
-
-    # what is the length of trajectory
-    trajectory_len = len(trajectories[0])
-    trajectories_len = len(trajectories)
-
-    # iterate through time step
-    for t in range(trajectory_len):
-        print(-1)
-        # average for a time t
-        sample_mean = 0.0
-
-        # iterate through all trajectories
-        for i in range(trajectories_len):
-            print(1)
-            # get r(s_t,a_t), s_t, and a_t ~ q_theta(a_t|s_t)
-            state = torch.FloatTensor(trajectories[i][t][0])
-            prevstate = torch.FloatTensor(trajectories[i][t][1])
-            action = trajectories[i][t][2]
-            reward = trajectories[i][t][3]
-            print(2)
-            # get log probability of observation
-            log_q = MVN.evaluate_log_pdf(action, prevstate)
-            print(3)
-            # add all rewards ahead of it
-            roll_out = 0.0
-            print(4)
-            for t_prime in range(t,trajectory_len):
-                print(4)
-                # get state info
-                state_t_prime = torch.FloatTensor(trajectories[i][t_prime][0])
-                prevstate_t_prime = torch.FloatTensor(trajectories[i][t_prime][1])
-                action_t_prime = trajectories[i][t_prime][2]
-                reward_t_prime = trajectories[i][t_prime][3]
-                print(6)
-                # add to roll out last term is constant.
-                roll_out += reward_t_prime.detach() - MVN.evaluate_log_pdf(action_t_prime, prevstate_t_prime).detach() #- 1
-            print(7)
-            roll_out -= reward.detach()
-            print(8)
-            # add the negative log pdf of event under policy distribution
-            typed_log_q = torch.autograd.Variable(log_q, requires_grad=True)
-            print(9)
-            # add sample to expectation
-            sample_mean += typed_log_q*roll_out
-        print(10)
-        # normalize then add to outer expection for a given time t
-        sample_mean += sample_mean/trajectories_len
-    print(11)
-    # we want the negative of this becuase the optimization method minimizes
-    return sample_mean/trajectory_len
-
+    1
 def my_objective_function(net, trajectories):
 
     # becuase we are drawing state-action pairs we should be able to use sample mean
