@@ -47,7 +47,7 @@ class simulator():
         env = PointMass(reward_style='distsq')
         state = env.reset()
         env.render()
-        for i in range(200):
+        for i in range(self.steps):
             next_state, reward, done, extra = env.step(self.policy(torch.FloatTensor(state)))
             state = next_state
             print('Reward achieved:', -reward)
@@ -75,7 +75,7 @@ class simulator():
 
 class NeuralNet(nn.Module):
 
-    def __init__(self, state_size = 6, hidden_size = 16, variable_dimention = 2):
+    def __init__(self, state_size = 6, hidden_size = 64, variable_dimention = 2):
         super(NeuralNet, self).__init__()
         # set dimention for the random variables
         self.variable_dimention = variable_dimention
@@ -83,12 +83,12 @@ class NeuralNet(nn.Module):
         # first layer
         self.fc1 = nn.Linear(state_size, hidden_size)
         # nonlinear activation functions
-        # self.relu1 = nn.ReLU()
+        self.relu1 = nn.ReLU()
 
         # inner layer 1
         self.fcinner1 = nn.Linear(hidden_size, hidden_size)
         # nonlinear activation functions
-        # self.relu2 = nn.ReLU()
+        self.relu2 = nn.ReLU()
 
         # output parameters for a normal_dist mean + diagnol cov
         self.fc2 = nn.Linear(hidden_size, 2*variable_dimention)
@@ -99,11 +99,11 @@ class NeuralNet(nn.Module):
         # first layer
         out = self.fc1(x)
         # nonlinear activation functions
-        # out = self.relu1(out)
+        out = self.relu1(out)
         # inner layer 1
         out = self.fcinner1(out)
         # nonlinear activation functions
-        # out = self.relu2(out)
+        out = self.relu2(out)
         # output parameters for a normal_dist
         out = self.fc2(out)
         # return
@@ -340,17 +340,15 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
             average_reward = cumulative_reward(net, trajectories)
             print("current cumulative reward: "  + str(average_reward))
             print("current loss gradient: "  + str(expected_loss))
-        # except:
-        #     print("numerical issues: (probably) \n Lapack Error in potrf : the leading minor of order 2 is not positive definite at /Users/soumith/code/builder/wheel/pytorch-src/aten/src/TH/generic/THTensorLapack.cpp:626")
 
     print('Finished Training!')
     return net
 
 def main():
     # pick the number of epochs / trajectories to average over ect.
-    epochs = 1000
+    epochs = 200
     trajectories_per_epoch = 1000
-    trajectory_length = 5
+    trajectory_length = 10
 
     # train the network
     trained_net = train_network(epochs, trajectories_per_epoch, trajectory_length)
