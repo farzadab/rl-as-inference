@@ -7,13 +7,16 @@ from builtins import (bytes, str, open, super, range,
 from gym.utils import seeding
 import numpy as np
 import os.path as path
+import pyglet
 import copy
+import uuid
 import time
 import gym
+import os
 import gym.spaces
 import pybullet_envs
 
-# from plots.plots import ScatterPlot, QuiverPlot, Plot, SurfacePlot
+from plots.plots import ScatterPlot, QuiverPlot, Plot, SurfacePlot
 
 class PointMass(gym.Env):
     '''
@@ -40,6 +43,7 @@ class PointMass(gym.Env):
     def __init__(self, max_steps=100, randomize_goal=True, writer=None, reset=True, reward_style='velocity'):
         self.max_steps = max_steps
         self.randomize_goal = randomize_goal
+        self.images = []  # for saving video if needed
         
         if reward_style in self.reward_styles:
             self.reward_style = self.reward_styles[reward_style]
@@ -125,8 +129,42 @@ class PointMass(gym.Env):
         p = np.clip(p + v * self.dt, -self.max_position, self.max_position)
 
         return p, v
+    
+    def save_video_if_possible(self):
+        import PIL
+        import cv2
+
+        if self.images:
+            try:
+                os.makedirs('vids')
+            except:
+                pass
+            
+            vidsize = (self.images[0].width, self.images[0].height)
+
+            vout = cv2.VideoWriter(
+                'vids/pointmass__recording__%s__%s.avi' % (
+                    time.strftime("%Y-%m-%d_%H-%M-%S"),
+                    str(uuid.uuid4())[0:6]
+                ),
+                cv2.VideoWriter_fourcc(*'MPEG'),
+                int(1/self.dt + 1e-3),
+                vidsize
+            )
+            for image in self.images:
+                vout.write(
+                    np.array(
+                        PIL.Image.frombytes(
+                            'RGB',
+                            vidsize,
+                            image.get_data('BGR', -(image.width * len('RGB')))
+                        )
+                    )
+                )
+            vout.release()
 
     def reset(self):
+        self.images = []  # clean up the recorder
         high = self.obs_high
         self.state = self.np_random.uniform(low=-high, high=high)
         if np.linalg.norm(self.state[-2:]) > self.max_speed:
@@ -185,47 +223,48 @@ class PointMass(gym.Env):
         # import time
         # time.sleep(self.dt)
 
-        return self.viewer.render(return_rgb_array = mode=='rgb_array')
+        self.viewer.render(return_rgb_array = mode=='rgb_array')
+        self.images.append(pyglet.image.get_buffer_manager().get_color_buffer().get_image_data())
 
-    # def visualize_solution(self, policy=None, value_func=None, i_iter=None):
-    #     '''
-    #         @brief Visualizes policy and value functions
-    #         the policy/value are visualized only for states where goal = v = 0
+    def visualize_solution(self, policy=None, value_func=None, i_iter=None):
+        '''
+            @brief Visualizes policy and value functions
+            the policy/value are visualized only for states where goal = v = 0
 
-    #         @param policy: a function that takes the state as input and outputs the action (as numpy array)
-    #         @param valud_func: a function that takes the state as input and outputs the value (as float)
-    #     '''
-    #     nb_points = 10
-    #     xlim = [self.observation_space.low[0], self.observation_space.high[0]]
-    #     ylim = [self.observation_space.low[1], self.observation_space.high[1]]
+            @param policy: a function that takes the state as input and outputs the action (as numpy array)
+            @param valud_func: a function that takes the state as input and outputs the value (as float)
+        '''
+        nb_points = 10
+        xlim = [self.observation_space.low[0], self.observation_space.high[0]]
+        ylim = [self.observation_space.low[1], self.observation_space.high[1]]
 
-    #     if self.plot is None:
-    #         self.plot = Plot(1,2)
-    #         self.splot = SurfacePlot(
-    #             parent=self.plot,
-    #             xlim=xlim, ylim=ylim,
-    #             value_range=[-self.max_speed*5, self.max_speed*5]
-    #         )
-    #         self.qplot = QuiverPlot(parent=self.plot, xlim=xlim, ylim=ylim)
+        if self.plot is None:
+            self.plot = Plot(1,2)
+            self.splot = SurfacePlot(
+                parent=self.plot,
+                xlim=xlim, ylim=ylim,
+                value_range=[-self.max_speed*5, self.max_speed*5]
+            )
+            self.qplot = QuiverPlot(parent=self.plot, xlim=xlim, ylim=ylim)
         
-    #     x = np.linspace(xlim[0], xlim[1], nb_points)
-    #     y = np.linspace(ylim[0], ylim[1], nb_points)
-    #     points = np.array(np.meshgrid(x,y)).transpose().reshape((-1,2))
-    #     v = np.ones(points.shape[0])
-    #     d = np.ones((points.shape[0], 2))
-    #     for i, p in enumerate(points):
-    #         state = np.concatenate([p, [0] * (self.observation_space.shape[0] - 2)])
-    #         if value_func is not None:
-    #             v[i] = value_func(state)
-    #         if policy is not None:
-    #             d[i] = policy(state)
+        x = np.linspace(xlim[0], xlim[1], nb_points)
+        y = np.linspace(ylim[0], ylim[1], nb_points)
+        points = np.array(np.meshgrid(x,y)).transpose().reshape((-1,2))
+        v = np.ones(points.shape[0])
+        d = np.ones((points.shape[0], 2))
+        for i, p in enumerate(points):
+            state = np.concatenate([p, [0] * (self.observation_space.shape[0] - 2)])
+            if value_func is not None:
+                v[i] = value_func(state)
+            if policy is not None:
+                d[i] = policy(state)
 
-    #     X, Y = np.meshgrid(x,y)
-    #     self.splot.update(X, Y, v.reshape(len(x), -1))
-    #     self.qplot.update(points, d)
+        X, Y = np.meshgrid(x,y)
+        self.splot.update(X, Y, v.reshape(len(x), -1))
+        self.qplot.update(points, d)
         
-    #     # if i_iter is not None and self.writer is not None:
-    #     #     self.writer.add_image('Vis/Nets', self.plot.get_image(), i_iter)
+        # if i_iter is not None and self.writer is not None:
+        #     self.writer.add_image('Vis/Nets', self.plot.get_image(), i_iter)
 
     def close(self):
         if self.viewer:
