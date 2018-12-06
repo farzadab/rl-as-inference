@@ -3,4 +3,6 @@ gym
 numpy
 matplotlib
 pyro-ppl
+opencv-python
+PIL
 #torch
