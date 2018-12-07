@@ -10,6 +10,7 @@ import pyro
 import pyro.infer
 import pyro.optim
 import pyro.distributions as dist
+from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
 from envs.pointmass import PointMass
 
@@ -23,8 +24,8 @@ def rl_model(env):
     env.state[:2] = pyro.sample("s_0", dist.Uniform(-1 * mx_pos, mx_pos))
     env.state[2:] = 0
     for i in range(T):
-        # a = pyro.sample("a_%d" % i, dist.Uniform(-100 * th.ones(2), 100 * th.ones(2)))
-        a = pyro.sample("a_%d" % i, dist.Normal(th.zeros(2), 10 * th.ones(2)))
+        a = pyro.sample("a_%d" % i, dist.Uniform(-100 * th.ones(2), 100 * th.ones(2)))
+        # a = pyro.sample("a_%d" % i, dist.Normal(th.zeros(2), 10 * th.ones(2)))
         _, r, _, _ = env.step(a.reshape(-1).detach().numpy())  # ignoring the `done` signal ...
         crew += r
         O_dist = dist.Bernoulli(th.FloatTensor([r]).exp())
@@ -55,7 +56,7 @@ def rl_linear_guide(env, render=False):
             env.render()
         a = pyro.sample(
             "a_%d" % i,
-            dist.Normal(
+            NonreparameterizedNormal(
                 th.FloatTensor(s).reshape(1,-1).mm(W) + b,
                 .2
             ),
