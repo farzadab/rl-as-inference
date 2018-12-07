@@ -14,15 +14,17 @@ from pyro.util import check_model_guide_match, check_site_shape, torch_isnan
 
 
 def _compute_log_r(model_trace, guide_trace):
-    log_r = MultiFrameTensor()
-    stacks = get_iarange_stacks(model_trace)
-    for name, model_site in model_trace.nodes.items():
+    # the following operation only makes sense in Python3.6+
+    downstream_log_r = dict()
+    log_r_term = 0
+    for name, model_site in reversed(list(model_trace.nodes.items())):
         if model_site["type"] == "sample":
-            log_r_term = model_site["log_prob"]
+            log_r_term = model_site["log_prob"] + log_r_term
             if not model_site["is_observed"]:
-                log_r_term = log_r_term - guide_trace.nodes[name]["log_prob"]
-            log_r.add((stacks[name], log_r_term.detach()))
-    return log_r
+                log_r_term -= guide_trace.nodes[name]["log_prob"]
+            downstream_log_r[name] = log_r_term
+    # print(downstream_log_r)
+    return downstream_log_r
 
 
 class Trace_ELBO(ELBO):
@@ -53,6 +55,8 @@ class Trace_ELBO(ELBO):
         for i in range(self.num_particles):
             guide_trace = poutine.trace(guide).get_trace(*args, **kwargs)
             model_trace = poutine.trace(poutine.replay(model, trace=guide_trace)).get_trace(*args, **kwargs)
+            # import ipdb
+            # ipdb.set_trace()
             if is_validation_enabled():
                 check_model_guide_match(model_trace, guide_trace)
                 enumerated_sites = [name for name, site in guide_trace.nodes.items()
@@ -94,6 +98,7 @@ class Trace_ELBO(ELBO):
             warnings.warn('Encountered NAN loss')
         return loss
 
+
     def loss_and_grads(self, model, guide, *args, **kwargs):
         """
         :returns: returns an estimate of the ELBO
@@ -117,20 +122,29 @@ class Trace_ELBO(ELBO):
 
             for name, site in guide_trace.nodes.items():
                 if site["type"] == "sample":
+                    # import ipdb
+                    # ipdb.set_trace()
                     log_prob, score_function_term, entropy_term = site["score_parts"]
 
                     elbo_particle = elbo_particle - torch_item(site["log_prob_sum"])
 
                     if not is_identically_zero(entropy_term):
+                        # print('has entropy:', name, site)
                         surrogate_elbo_particle = surrogate_elbo_particle - entropy_term.sum()
 
                     if not is_identically_zero(score_function_term):
                         if log_r is None:
                             log_r = _compute_log_r(model_trace, guide_trace)
-                        site = log_r.sum_to(site["cond_indep_stack"])
+                        # site = log_r.sum_to(site["cond_indep_stack"])
+                        site = log_r[name]
+                        # print('has score:', name, site, score_function_term)
                         surrogate_elbo_particle = surrogate_elbo_particle + (site * score_function_term).sum()
 
+
             elbo += elbo_particle / self.num_particles
+
+            # import ipdb
+            # ipdb.set_trace()
 
             # collect parameters to train from model and guide
             trainable_params = any(site["type"] == "param"
@@ -142,75 +156,6 @@ class Trace_ELBO(ELBO):
                 surrogate_loss_particle.backward()
 
         loss = -elbo
-        if torch_isnan(loss):
-            warnings.warn('Encountered NAN loss')
-        return loss
-
-
-class JitTrace_ELBO(Trace_ELBO):
-    """
-    Like :class:`Trace_ELBO` but uses :func:`pyro.ops.jit.compile` to compile
-    :meth:`loss_and_grads`.
-
-    This works only for a limited set of models:
-
-    -   Models must have static structure.
-    -   Models must not depend on any global data (except the param store).
-    -   All model inputs that are tensors must be passed in via ``*args``.
-    -   All model inputs that are *not* tensors must be passed in via
-        ``*kwargs``, and these will be fixed to their values on the first
-        call to :meth:`jit_loss_and_grads`.
-
-    .. warning:: Experimental. Interface subject to change.
-    """
-    def loss_and_grads(self, model, guide, *args, **kwargs):
-        if getattr(self, '_loss_and_surrogate_loss', None) is None:
-            # build a closure for loss_and_surrogate_loss
-            weakself = weakref.ref(self)
-
-            @pyro.ops.jit.compile(nderivs=1)
-            def loss_and_surrogate_loss(*args):
-                self = weakself()
-                loss = 0.0
-                surrogate_loss = 0.0
-                for model_trace, guide_trace in self._get_traces(model, guide, *args, **kwargs):
-                    elbo_particle = 0
-                    surrogate_elbo_particle = 0
-                    log_r = None
-
-                    # compute elbo and surrogate elbo
-                    for name, site in model_trace.nodes.items():
-                        if site["type"] == "sample":
-                            elbo_particle = elbo_particle + site["log_prob_sum"]
-                            surrogate_elbo_particle = surrogate_elbo_particle + site["log_prob_sum"]
-
-                    for name, site in guide_trace.nodes.items():
-                        if site["type"] == "sample":
-                            log_prob, score_function_term, entropy_term = site["score_parts"]
-
-                            elbo_particle = elbo_particle - site["log_prob_sum"]
-
-                            if not is_identically_zero(entropy_term):
-                                surrogate_elbo_particle = surrogate_elbo_particle - entropy_term.sum()
-
-                            if not is_identically_zero(score_function_term):
-                                if log_r is None:
-                                    log_r = _compute_log_r(model_trace, guide_trace)
-                                site = log_r.sum_to(site["cond_indep_stack"])
-                                surrogate_elbo_particle = surrogate_elbo_particle + (site * score_function_term).sum()
-
-                    loss = loss - elbo_particle / self.num_particles
-                    surrogate_loss = surrogate_loss - surrogate_elbo_particle / self.num_particles
-
-                return loss, surrogate_loss
-
-            self._loss_and_surrogate_loss = loss_and_surrogate_loss
-
-        # invoke _loss_and_surrogate_loss
-        loss, surrogate_loss = self._loss_and_surrogate_loss(*args)
-        surrogate_loss.backward()  # this line triggers jit compilation
-        loss = loss.item()
-
         if torch_isnan(loss):
             warnings.warn('Encountered NAN loss')
         return loss
