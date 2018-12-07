@@ -62,7 +62,7 @@ def rl_linear_guide(env, render=False):
             ),
             infer={'baseline': {
                 'nn_baseline': critic,
-                'nn_baseline_input': s
+                'nn_baseline_input': th.FloatTensor(s).detach()
             }},
         )
         s, r, _, _ = env.step(a.detach().reshape(-1).numpy())  # ignoring the `done` signal ...
@@ -75,7 +75,7 @@ pyro.clear_param_store()
 svi = pyro.infer.SVI(model=rl_model,
                      guide=rl_linear_guide,
                      optim=pyro.optim.Adam({"lr": 0.001}),
-                     loss=pyro.infer.Trace_ELBO(num_particles=20))
+                     loss=pyro.infer.TraceGraph_ELBO(num_particles=20))
 
 env = PointMass(reward_style='distsq')   # the 'distsq' reward is always negative
 
@@ -87,7 +87,7 @@ critic = nn.Sequential(
     nn.LeakyReLU(),
     nn.Linear(4, 2),
     nn.LeakyReLU(),
-    nn.Linear(2, 1),
+    nn.Linear(2, 2),
 )
 
 losses = []
