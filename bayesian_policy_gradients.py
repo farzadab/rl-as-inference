@@ -203,18 +203,22 @@ class Param_MultivariateNormal():
         # sample from it
         return mvn.sample()
 
-def bayesian_policy_gradient(trajectories_per_epoch, trajectory_length, W, b):
+def bayesian_policy_gradient(epochs, trajectories_per_epoch, trajectory_length):
+
+    # initial values for regression model
+    W = torch.randn((2, 6), requires_grad=True)
+    b = torch.zeros((1, 2), requires_grad=True)
+
+    # set learning rate
+    alpha = .05
 
     # set standard deviation
-    sd = 0.01
-
-    # initialize log probabilty measure
-    log_prob = lambda state, action: dist.Normal(torch.mv(W,state) + b, sd).log_prob(action)
+    sd = .01
 
     # create policy function (not random)
     policy = lambda state: dist.Normal(torch.mv(W,state) + b, sd).sample()[0]
 
-    # simulator for generating trajectories under policy
+    # generate simulator with random policy to initialize stuff
     sim = simulator(trajectory_length, policy)
 
     # initialize initialize tensors used below
@@ -227,86 +231,89 @@ def bayesian_policy_gradient(trajectories_per_epoch, trajectory_length, W, b):
     Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
     Y = torch.zeros((trajectories_per_epoch), requires_grad=False)
 
-    # initialize Fisher information for each parameter set
-    G = torch.zeros((14, 14), requires_grad=False)
-
-    # run bayesian policy gradient to approximate gradient update
-    for trajectory_set in range(1,trajectories_per_epoch):
-
-        # simulate trjectories under W, b
-        trajectory_states, trajectory_actions, trajectory_rewards = sim.simulate_trajectory()
-        trajectories_state_tensor[trajectory_set,:,:] = trajectory_states
-        trajectories_action_tensor[trajectory_set,:,:] = trajectory_actions
-        trajectories_reward_tensor[trajectory_set,:] = trajectory_rewards
-
-        # compute sum of log_prob of states in trajectory wrt W,b
-        trajectory_log_prob = 0.0
-        cumulative_reward = 0.0
-        for t in range(trajectory_length):
-            # [value, timestep]
-            trajectory_log_prob = trajectory_log_prob + log_prob(trajectory_states[:,t],trajectory_actions[:,t])
-            # also compute cumulative reward over trjectory
-            cumulative_reward = cumulative_reward + trajectory_rewards[t]
-
-        # compute gradient of that sum using backwards
-        trajectory_log_prob.backward(trajectory_log_prob)
-
-        # store values for Y
-        Y[trajectory_set] = cumulative_reward
-
-        # store values for Z
-        Z[:, trajectory_set] = torch.cat([W.grad.view(12,-1), b.grad.view(2,1)], 0).view(-1)
-
-        # update approximation of G
-        G = G + torch.ger(Z[:, trajectory_set], Z[:, trajectory_set])
-
-    # normalize Fisher information
-    G = G/(trajectories_per_epoch*trajectory_length)
-
-    # calculate kernal matrix
-    K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(G.inverse(),Z))
-
-    # calculate covariance
-    sigma = 1
-    C = (K + sigma*torch.eye(2)).inverse()
-
-    # calculate posterior mean and covariance
-    ZC = torch.mm(Z, C)
-    posterior_mean = torch.mv(ZC,Y)
-    posterior_covariance = None # ignore for now
-
-    # return approximation of the gradient
-    return posterior_mean, posterior_covariance
-
-def train_agent(epochs, trajectories_per_epoch, trajectory_length):
-
-    # initial values for regression model
-    W = torch.randn((2, 6), requires_grad=True)
-    b = torch.zeros((1, 2), requires_grad=True)
-
-    # set learning rate
-    alpha = 1
-
     for epoch in range(epochs):
 
-        print(epoch)
+        # initialize Fisher information for each parameter set
+        G = torch.zeros((14, 14), requires_grad=False)
 
-        # calculate gradient using updates
-        posterior_mean_grad, _ = bayesian_policy_gradient(trajectories_per_epoch, trajectory_length, W, b)
+        # create policy function (not random)
+        policy = lambda state: dist.Normal(torch.mv(W,state) + b, sd).sample()[0]
+
+        # generate simulator with random policy to initialize stuff
+        sim = simulator(trajectory_length, policy)
+
+        # run bayesian policy gradient to approximate gradient update
+        for trajectory_set in range(1,trajectories_per_epoch):
+
+            # simulate trjectories under W, b
+            trajectory_states, trajectory_actions, trajectory_rewards = sim.simulate_trajectory()
+            trajectories_state_tensor[trajectory_set,:,:] = trajectory_states
+            trajectories_action_tensor[trajectory_set,:,:] = trajectory_actions
+            trajectories_reward_tensor[trajectory_set,:] = trajectory_rewards
+
+            # compute sum of log_prob of states in trajectory wrt W,b
+            trajectory_log_prob = 0.0
+
+            for t in range(trajectory_length):
+                # [value, timestep]
+                trajectory_log_prob = trajectory_log_prob + dist.Normal(torch.mv(W,trajectory_states[:,t]) + b, sd).log_prob(trajectory_actions[:,t])
+
+            # also compute cumulative reward over trjectory subtract baseline
+            cumulative_reward = sum(trajectory_rewards)/trajectory_length
+
+            # compute gradient of that sum using backwards
+            trajectory_log_prob.backward(trajectory_log_prob, retain_graph = True)
+
+            print(W.grad)
+            print(b.grad)
+
+            # store values for Y
+            Y[trajectory_set] = cumulative_reward
+
+            # store values for Z
+            Z[:, trajectory_set] = torch.cat([W.grad.view(12,-1), b.grad.view(2,1)], 0).view(-1)
+
+            # update approximation of G
+            G = G + torch.ger(Z[:, trajectory_set], Z[:, trajectory_set])
+
+            # set gradient data to zero
+            W.grad = W.grad*0
+            b.grad = b.grad*0
+
+        # normalize Fisher information
+        G = G/(trajectories_per_epoch*trajectory_length)
+
+        # calculate kernal matrix
+        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(G.inverse(),Z))
+
+        # calculate covariance
+        sigma = 1
+        C = (K + sigma*torch.eye(K.size()[0])).inverse()
+
+        # calculate posterior mean and covariance
+        ZC = torch.mm(Z, C)
+        posterior_mean = torch.mv(ZC,Y)
+        posterior_covariance = None # ignore for now
 
         # pull grad wrt W and b
-        grad_W = posterior_mean_grad[:12].view(2,6)
-        grad_b = posterior_mean_grad[12:].view(1,2)
+        grad_W = posterior_mean[:12].view(2,6)
+        grad_b = posterior_mean[12:].view(1,2)
 
         # now update the parameters
-        W = W + alpha*grad_W
-        b = b + alpha*grad_b
+        W = W + alpha*grad_W/(torch.norm(grad_W, 2))
+        b = b + alpha*grad_b/(torch.norm(grad_b, 2))
 
-    # now lets see how shee role
+        print(W)
+        print(b)
+
+        # print info
+        print("epoch: " + str(epoch))
+        print("gradient step W: " + str(grad_W))
+        print("gradient step W: " + str(grad_b))
+        print("parameter values: " + str(W) + str(b))
+        print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
 
     return W, b
-
-
 
 
 
@@ -317,13 +324,10 @@ ACTION_DIMENSIONS = 2
 STATE_ACTION_DIMENSIONS = 8
 
 def main():
-
-
-    epochs = 2
-    trajectories_per_epoch = 2
-    trajectory_length = 2
-
-    W, b = train_agent(epochs, trajectories_per_epoch, trajectory_length)
+    epochs = 10
+    trajectories_per_epoch = 25
+    trajectory_length = 500
+    W, b = bayesian_policy_gradient(epochs, trajectories_per_epoch, trajectory_length)
 
 
 if __name__ == '__main__':
