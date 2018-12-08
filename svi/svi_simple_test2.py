@@ -1,19 +1,13 @@
 '''
-Simplest possible test: finding a fixed direction with MSE
+2nd simple test: state-dependent direction with MSE reward
 
 Report:
-  - it works, but it does take a bit of time
-    * depending on the starting point, takes around 200-500 steps with lr=0.01 and num_particles=100
-  - lr=0.001: needs a lot more than 1000 steps
-  - num_particles=10 and lr=0.001: solves after ~7K (more efficient than num_particles=100)
-  - num_particles=1  and lr=0.001: solves after ~20K (a lot more efficient!)
-  - num_particles=1  and lr=0.01 : solves really fast but doesn't quite settle on the right solution (moves around)
-  - num_particles=10 and lr=0.01 : same as above but with less variation
-
-  - num_particles=10 and lr=0.003: solves after ~2K
-Remark:
-  - a fixed value of lr * steps ~= 2-20 is required almost regardless of the num_particles
-    * num_particles is important, but doesn't seem to be the bottleneck for this problem
+  - num_particles=10  and lr=0.003: solves after ~2-3K
+  - num_particles=100 and lr=0.003: solves after ~2-3K (really inefficient)
+  - num_particles=1   and lr=0.003: solves after ~8-9K (more efficient, but noisy ELBO)
+    * can't really tell from ELBO alone when/if the solution has been found
+  - num_particles=10  and lr=0.001: solves after ~7-8K (in line with the lr * steps formula from previous experiments)
+  - num_particles=10  and lr=0.01 : solves after ~1-2K but doesn't settle down even after 5K
 '''
 import numpy as np
 import matplotlib.pyplot as plt
@@ -37,34 +31,46 @@ from .distributions import FlexibleBernoulli
 
 direction = th.FloatTensor([1, -1])
 
+def init_state():
+    mx_pos = th.ones(2)
+    p = pyro.sample("s", dist.Uniform(-1 * mx_pos, mx_pos))
+    g = pyro.sample("g", dist.Uniform(-1 * mx_pos, mx_pos))
+    return p, g
+
+def compute_reward(a, p, g):
+    return -1 * (a - (g - p)).pow(2).sum()
+
 def rl_model():
+    p, g = init_state()
     a = pyro.sample("a", dist.Uniform(-100 * th.ones(2), 100 * th.ones(2)))
     # reward is the distance to the correct direction
-    r = -1 * (a - direction).pow(2).sum()
+    r = compute_reward(a, p, g)
     O_dist = FlexibleBernoulli(th.FloatTensor([r]).exp())
     pyro.sample("O", O_dist, obs=1)
-    return th.cat([a.detach(), th.FloatTensor([r])])
+    return th.cat([a.squeeze().detach(), th.FloatTensor([r])])
     
 
 def rl_linear_guide():
     # Define net params, just a linear model right now:
-    W = pyro.param("W", th.randn(2))
+    W = pyro.param("W", th.randn((4, 2)))
+
+    p, g = init_state()
 
     a = pyro.sample(
         "a",
         NonreparameterizedNormal(
-            W,
+            th.cat([p, g]).reshape(1, -1).mm(W),
             .5
         ),
     )
-    r = -1 * (a.detach() - direction).pow(2).sum()
-    return th.cat([a.detach(), th.FloatTensor([r])])
+    r = compute_reward(a, p, g)
+    return th.cat([a.squeeze().detach(), th.FloatTensor([r])])
 
 
 pyro.clear_param_store()
 svi = pyro.infer.SVI(model=rl_model,
                      guide=rl_linear_guide,
-                     optim=pyro.optim.Adam({"lr": 0.003}),
+                     optim=pyro.optim.Adam({"lr": 0.01}),
                      loss=pyro.infer.Trace_ELBO(num_particles=10))
 
 losses = []
@@ -83,4 +89,4 @@ plt.ylabel("loss")
 p.get_figure().canvas.draw()
 p.get_figure().canvas.flush_events()
 plt.show()
-time.sleep(100)
+time.sleep(10000)
