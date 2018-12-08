@@ -29,7 +29,7 @@ from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
 from envs.pointmass import PointMass
 from .tracegraph_elbo import TraceGraph_ELBO
-from .distributions import FlexibleBernoulli
+from .distributions import FlexibleBernoulli, InfiniteUniform
 
 
 def init_state():
@@ -43,7 +43,7 @@ def compute_reward(a, p, g):
 
 def rl_model(_):
     p, g = init_state()
-    a = pyro.sample("a", dist.Uniform(-100 * th.ones(2), 100 * th.ones(2)))
+    a = pyro.sample("a", InfiniteUniform(2))
     # reward is the distance to the correct direction
     r = compute_reward(a, p, g)
     O_dist = FlexibleBernoulli(th.FloatTensor([r]).exp())
@@ -107,7 +107,7 @@ def get_args():
     parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
     parser.add_argument("--nb_layers", type=int, default=4)
     parser.add_argument("--layer_size", type=int, default=16)
-    parser.add_argument("--nb_steps", type=int, default=3000)
+    parser.add_argument("--nb_steps", type=int, default=1000)
     parser.add_argument("--nb_particles", type=int, default=10)
     parser.add_argument("--lr", type=float, default=0.001)
     return parser.parse_args()
