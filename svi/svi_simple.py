@@ -1,12 +1,5 @@
 '''
-3rd simple test: larger network (with state-dependent direction and MSE reward)
-
-Report:
-  - num_particles=10  and lr=0.003: settles down after 3-4K, but it's really noisy (4 layer of size 16)
-  - num_particles=10  and lr=0.001: settles down after 4-5K, still noisy (avg reward seems to be higher though)
-  - num_particles=100 and lr=0.003: 
-  - num_particles=1   and lr=0.003: 
-  - num_particles=10  and lr=0.01 : 
+SVI tests for RL
 '''
 import numpy as np
 import matplotlib.pyplot as plt
@@ -41,30 +34,38 @@ def init_state():
 def compute_reward(a, p, g):
     return -1 * (a - (g - p)).pow(2).sum()
 
-def rl_model(_):
+def rl_model(_, args):
+    crew = 0
     p, g = init_state()
-    a = pyro.sample("a", InfiniteUniform(2))
-    # reward is the distance to the correct direction
-    r = compute_reward(a, p, g)
-    O_dist = FlexibleBernoulli(th.FloatTensor([r]).exp())
-    pyro.sample("O", O_dist, obs=1)
-    return th.cat([a.squeeze().detach(), th.FloatTensor([r])])
+    for i in range(args.ep_len):
+        a = pyro.sample("a_%d" % i, InfiniteUniform(2))
+        # reward is the distance to the correct direction
+        r = compute_reward(a, p, g)
+        O_dist = FlexibleBernoulli(th.FloatTensor([r / args.ep_len]).exp())
+        pyro.sample("O_%d" % i, O_dist, obs=1)
+        crew += r
+
+    return th.cat([a.squeeze().detach(), th.FloatTensor([crew])])
     
 
-def rl_guide(policy):
+def rl_guide(policy, args):
     pyro.module('policy', policy)
 
+    crew = 0
     p, g = init_state()
 
-    a = pyro.sample(
-        "a",
-        NonreparameterizedNormal(
-            policy(th.cat([p, g])),
-            .5
-        ),
-    )
-    r = compute_reward(a, p, g)
-    return th.cat([a.squeeze().detach(), th.FloatTensor([r])])
+    for i in range(args.ep_len):
+        a = pyro.sample(
+            "a_%d" % i,
+            NonreparameterizedNormal(
+                policy(th.cat([p, g])),
+                args.policy_stdev
+            ),
+        )
+        r = compute_reward(a, p, g)
+        crew += r
+
+    return th.cat([a.squeeze().detach(), th.FloatTensor([crew])])
 
 
 def create_policy_net(nb_layers, layer_size):
@@ -80,7 +81,7 @@ def create_policy_net(nb_layers, layer_size):
 
 def plot_elbo(losses):
     p, = plt.plot(losses)
-    plt.title("ELBO")
+    plt.title("negative ELBO")
     plt.xlabel("step")
     plt.ylabel("loss")
     p.get_figure().canvas.draw()
@@ -110,6 +111,8 @@ def get_args():
     parser.add_argument("--nb_steps", type=int, default=1000)
     parser.add_argument("--nb_particles", type=int, default=10)
     parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--policy_stdev", type=float, default=0.5)
+    parser.add_argument("--ep_len", type=int, default=10)
     return parser.parse_args()
 
 
@@ -125,7 +128,7 @@ def train(args):
     losses = []
     for t in range(args.nb_steps):
         # step() takes a single gradient step and returns an estimate of the loss
-        losses.append(svi.step(policy))
+        losses.append(svi.step(policy, args))
         print('\rStep %d' % (t+1), end='')
 
     plot_elbo(losses)

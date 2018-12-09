@@ -16,6 +16,7 @@ Remark:
   - a fixed value of lr * steps ~= 2-20 is required almost regardless of the num_particles
     * num_particles is important, but doesn't seem to be the bottleneck for this problem
 
+
 ## 2nd test: state-dependent direction with MSE reward
 
 Report:
@@ -26,11 +27,31 @@ Report:
   - num_particles=10  and lr=0.001: solves after ~7-8K (in line with the lr * steps formula from previous experiments)
   - num_particles=10  and lr=0.01 : solves after ~1-2K but doesn't settle down even after 5K
 
+
 ## 3rd test: larger (non-linear) network (with state-dependent direction and MSE reward)
 
 Report:
-  - num_particles=10  and lr=0.003: settles down after 3-4K, but it's really noisy (4 layer of size 16)
+  - num_particles=10  and lr=0.003: settles down after 3-4K, but it's really noisy
   - num_particles=10  and lr=0.001: settles down after 4-5K, still noisy (avg reward seems to be higher though)
-  - num_particles=100 and lr=0.003: 
+  - num_particles=100 and lr=0.001: settles down after 0.5K [1]
+  - num_particles=100 and lr=0.003: settles down after 1K   [2]
   - num_particles=1   and lr=0.003: 
   - num_particles=10  and lr=0.01 : 
+
+Hyper-params:
+  - 4 layers of size 16
+
+
+Experiments:
+  - [1] `2018-12-08_01-49-04__svi_simple_test3`
+  - [2] `2018-12-08_01-50-01__svi_simple_test3`
+
+
+## Positive reward
+
+Report:
+  - Works!
+    * seems like `FlexibleBernoulli` can handle positive reward, i.e. unnormalized bernoulli [1]
+
+Experiments:
+  - [1] `2018-12-08_01-58-06__positive-reward`
