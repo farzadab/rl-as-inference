@@ -22,7 +22,7 @@ from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
 from envs.pointmass import PointMass
 from .tracegraph_elbo import TraceGraph_ELBO
-from .distributions import FlexibleBernoulli, InfiniteUniform
+from .distributions import UnnormExpBernoulli, InfiniteUniform
 
 
 def init_state():
@@ -41,7 +41,7 @@ def rl_model(_, args):
         a = pyro.sample("a_%d" % i, InfiniteUniform(2))
         # reward is the distance to the correct direction
         r = compute_reward(a, p, g)
-        O_dist = FlexibleBernoulli(th.FloatTensor([r / args.ep_len]).exp())
+        O_dist = UnnormExpBernoulli(th.FloatTensor([r / args.ep_len]))
         pyro.sample("O_%d" % i, O_dist, obs=1)
         crew += r
 
@@ -140,9 +140,11 @@ def load(args):
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
     )
+    import ipdb
+    ipdb.set_trace()
     rewards = []
     for i in range(args.nb_steps):
-        rewards.append(rl_guide(policy)[-1].item())
+        rewards.append(rl_guide(policy, args)[-1].item())
     print(sum(rewards) / args.nb_steps)
 
 

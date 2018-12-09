@@ -55,3 +55,15 @@ Report:
 
 Experiments:
   - [1] `2018-12-08_01-58-06__positive-reward`
+
+Remarks:
+  - Don't even need to calculate the `exp` anymore so changing the name to `UnnormExpBernoulli`
+
+
+## 4th test: multiple (unrelated) actions
+
+Report:
+  - nb_particles=100, lr=0.001, T=2:  [1]
+
+Experiments:
+  - [1]
