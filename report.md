@@ -91,6 +91,8 @@ Report:
   - nb_particles=100, lr=0.001, T=10: doesn't seem to stabilize (variance is high) [8]
     * MSE: 0.63
 
+Carry over:
+  ✔ __nb_particles=200__ seems to work a bit better
 
 Experiments:
   - [4] `2018-12-08_02-29-58__multi-actions_2`
@@ -116,13 +118,44 @@ Experiments:
 ## 6th test: baselines
 
 Report:
-  - decaying_avg_baseline, nb_particles=100, lr=0.001, T=10: MSE: 0.09-0.19 and [11,12]
+  - decaying_avg_baseline, nb_particles=100: MSE: 0.09-0.19 and [11,12]
     * stabilizes after 0.5K (great!) and in the second run only had nb_steps=0.5K so it can get better
-  - decaying_avg_baseline, nb_particles=200, lr=0.001, T=10: 
-  - nn baseline (s):
-  - nn baseline (m):
-  - nn baseline (l):
+  - decaying_avg_baseline, nb_particles=200: MSE: **0.60** (why?) [13]
+  - nn baseline (l): MSE: 0.10 with both # of particles 200 [14] and 100 [15]
+  - nn baseline (m): MSE: 0.16 [16]
+  - nn baseline (s): MSE: 0.34 [17]
+
+Hyper-params:
+  - 4 layers of size 16 (l)
+  - 2 layers of size 8  (m)
+  - 1 layers of size 4  (s)
+  - nb_particles=200, T=10, lr=0.001 (unless specified)
+
+Remark:
+  - seems like __decaying_avg_baseline__ and __large enough nn_baseline__ work almost as good
+  - Can we make the net larger still? Probably not worth it
+  - Why did we get bad results for nb_particles=200 and decaying_avg?
+
+Carry over:
+  ✔ Let's go with __large enough NN__ since the results are more __consistent__
 
 Experiments:
   - [11] `2018-12-09_20-41-49__baselines1_T10_graph`
   - [12] `2018-12-09_20-59-41__baselines1_T10_graph_repeat`
+  - [13] `2018-12-10_00-52-38__baselines1_T10_200`
+  - [14] `2018-12-10_01-52-36__baselines2_T10_200`
+  - [15] `2018-12-10_01-53-13__baselines2_T10_100`
+  - [16] `2018-12-10_01-51-39__baselines3_T10_200`
+  - [17] `2018-12-10_01-55-51__baselines3_T10_200`
+
+
+## 7th test: larger episode lengths
+
+Report:
+  - T=20: MSE: 0.15 converges after 0.6K
+  - T=30:
+  - T=50:
+  - T=100:
+  - T=20, lr=0.0005: MSE: 0.10 converges after 1.1K (almost double)
+
+Experiments: 
