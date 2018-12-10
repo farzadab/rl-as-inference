@@ -83,12 +83,6 @@ def rl_linear_guide(env, render=False):
 
 
 pyro.clear_param_store()
-svi = pyro.infer.SVI(model=rl_model,
-                     guide=rl_linear_guide,
-                     optim=pyro.optim.Adam({"lr": 0.001}),
-                     loss=TraceGraph_ELBO(num_particles=20))
-
-# env = PointMass(reward_style='distsq')   # the 'distsq' reward is always negative
 env = PointMass(reward_style='pot')   # the 'pot-mvel' reward is always negative
 
 # Initializing the critic network (a.k.a. the value function)
@@ -118,36 +112,41 @@ policy = nn.Sequential(
 )
 
 losses = []
-# optimizer = pyro.optim.Adam({"lr": 0.001})
-# loss_fn = pyro.infer.TraceGraph_ELBO(num_particles=20)
+optimizer = pyro.optim.Adam({"lr": 0.001})
+loss_fn = pyro.infer.TraceGraph_ELBO(num_particles=20)
 
-# # dummy_trace = loss_fn._get_traces(rl_model, rl_linear_guide, env)
-# with pyro.poutine.trace(param_only=True) as param_capture:
-#         loss = loss_fn.loss_and_grads(rl_model, rl_linear_guide, env)
-# losses.append(loss)
-# params = set(site["value"].unconstrained()
-#         for site in param_capture.trace.nodes.values())
-# optimizer(params)
-# pyro.infer.util.zero_grads(params)
-
+with pyro.poutine.trace(param_only=True) as param_capture:
+        loss = loss_fn.loss_and_grads(rl_model, rl_linear_guide, env)
+losses.append(loss)
+params = set(site["value"].unconstrained()
+        for site in param_capture.trace.nodes.values())
+optimizer(params)
+pyro.infer.util.zero_grads(params)
+pre_guide_trace = pyro.poutine.trace(rl_linear_guide).get_trace(env)
 # pre_guide_trace = loss_fn._get_traces(rl_model, rl_linear_guide, env)
-# import ipdb; ipdb.set_trace()
 
-for t in range(10):
-    # step() takes a single gradient step and returns an estimate of the loss
-    losses.append(svi.step(env))
-    print('\rStep %d' % (t+1), end='')
-    if t % 2 == 0:
-        print(rl_linear_guide(env, True))
-        # W = pyro.param("W")
-        # b = pyro.param("b")
-        # print('W:', W)
-        # print('b:', b)
-        env.visualize_solution(
-            # policy=lambda s: (th.FloatTensor(s).reshape(1,-1).mm(W) / env.max_position + b).detach() * env.max_torque,
-            policy=lambda s: (policy(th.FloatTensor(s) / env.max_position) * env.max_torque).detach(),
-            value_func=lambda s: critic(th.cat([th.FloatTensor(s), th.FloatTensor([0])])).detach()[0]
-        )
+import ipdb; ipdb.set_trace()
+# for t in range(1, 10):
+#     # step() takes a single gradient step and returns an estimate of the loss
+#     # losses.append(svi.step(env))
+#     # print('\rStep %d' % (t+1), end='')
+#     with pyro.poutine.trace(param_only=True) as param_capture:
+#         loss = loss_fn.loss_and_grads(rl_model, rl_linear_guide, env)
+#     losses.append(loss)
+
+#     params = set(site["value"].unconstrained()
+#             for site in param_capture.trace.nodes.values())
+#     optimizer(params)
+#     pyro.infer.util.zero_grads(params)
+#     # losses.append(loss)
+#     # optimizer.step()
+#     # optimizer.zero_grad()
+#     pre_guide_trace = pyro.poutine.trace(rl_linear_guide).get_trace(env)
+#     # model_trace = pyro.poutine.trace(rl_model).get_trace(env)
+#     # import ipdb; ipdb.set_trace()
+#     print('------Step %d' % (t+1))
+#     print(guide_trace.nodes['a_10']['value'])
+#     print(loss)
 
 # W2 = pyro.param("W2")
 # b2 = pyro.param("b2")
