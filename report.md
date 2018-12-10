@@ -12,6 +12,7 @@ Report:
   - num_particles=10 and lr=0.01 : same as above but with less variation
 
   - num_particles=10 and lr=0.003: solves after ~2K
+
 Remark:
   - a fixed value of lr * steps ~= 2-20 is required almost regardless of the num_particles
     * num_particles is important, but doesn't seem to be the bottleneck for this problem
@@ -27,6 +28,9 @@ Report:
   - num_particles=10  and lr=0.001: solves after ~7-8K (in line with the lr * steps formula from previous experiments)
   - num_particles=10  and lr=0.01 : solves after ~1-2K but doesn't settle down even after 5K
 
+Carry over (Change and/or params for Future runs):
+  ✔ num_particles=10  and lr=0.003
+
 
 ## 3rd test: larger (non-linear) network (with state-dependent direction and MSE reward)
 
@@ -41,6 +45,9 @@ Report:
 Hyper-params:
   - 4 layers of size 16
 
+Carry over:
+  ✔ num_particles=100 and lr=0.001
+  ✔ using large networks
 
 Experiments:
   - [1] `2018-12-08_01-49-04__svi_simple_test3`
@@ -51,19 +58,36 @@ Experiments:
 
 Report:
   - Works!
-    * seems like `FlexibleBernoulli` can handle positive reward, i.e. unnormalized bernoulli [1]
-
-Experiments:
-  - [1] `2018-12-08_01-58-06__positive-reward`
+    * seems like `FlexibleBernoulli` can handle positive reward, i.e. unnormalized bernoulli [3]
 
 Remarks:
   - Don't even need to calculate the `exp` anymore so changing the name to `UnnormExpBernoulli`
+
+Carry over:
+  ✔ can use positive rewards
+  ✔ no need to calculate the `exp`
+
+Experiments:
+  - [3] `2018-12-08_01-58-06__positive-reward`
 
 
 ## 4th test: multiple (unrelated) actions
 
 Report:
-  - nb_particles=100, lr=0.001, T=2:  [1]
+  - nb_particles=100, lr=0.001, T=2 : performance is degraded, but still works [4]
+    * MSE of [3] was 0.21 but it goes up to 0.51 in [4]
+    * stabilizes after only 250 steps (fast!)
+  - nb_particles=100, lr=0.001, T=10: performance is really bad [5]
+    * MSE goes up to 1.16
+    * doesn't stabilize after 2K steps, maybe more training is needed
+  - nb_particles=100, lr=0.001, T=5 :  [6]
+  - nb_particles=200, lr=0.001, T=10:  [7]
+  - nb_particles=100, lr=0.001, T=10, steps=4K:  [8]
+
 
 Experiments:
-  - [1]
+  - [4] `2018-12-08_02-29-58__multi-actions_2`
+  - [5] `2018-12-08_11-44-19__multi-actions_10`
+  - [6] ``
+  - [7] ``
+  - [8] ``

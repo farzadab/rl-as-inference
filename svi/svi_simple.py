@@ -105,6 +105,7 @@ def save_everything(args, policy, losses):
 def get_args():
     parser = argparse.ArgumentParser(description="Simple test3: SVI for RL")
     parser.add_argument("--load_path", type=str, default='')
+    parser.add_argument("--manual_debug", type=bool, default=False)
     parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
     parser.add_argument("--nb_layers", type=int, default=4)
     parser.add_argument("--layer_size", type=int, default=16)
@@ -140,12 +141,13 @@ def load(args):
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
     )
-    import ipdb
-    ipdb.set_trace()
+    if args.manual_debug:
+        import ipdb
+        ipdb.set_trace()
     rewards = []
     for i in range(args.nb_steps):
         rewards.append(rl_guide(policy, args)[-1].item())
-    print(sum(rewards) / args.nb_steps)
+    print(sum(rewards) / args.ep_len / args.nb_steps)
 
 
 def main():
