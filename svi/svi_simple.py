@@ -35,7 +35,7 @@ def init_state():
 def compute_reward(a, p, g):
     return -1 * (a - (g - p)).pow(2).sum()
 
-def rl_model(_, args):
+def rl_model(_policy, _critic, args):
     crew = 0
     p, g = init_state()
     for i in range(args.ep_len):
@@ -49,9 +49,11 @@ def rl_model(_, args):
     return th.cat([a.squeeze().detach(), th.FloatTensor([crew])])
     
 
-def rl_guide(policy, args):
+def rl_guide(policy, critic, args):
     pyro.module('policy', policy)
-
+    if critic is not None:
+        pyro.module('critic', critic)
+    
     crew = 0
     p, g = init_state()
 
@@ -63,9 +65,9 @@ def rl_guide(policy, args):
                 args.policy_stdev
             ),
             infer={'baseline': {
-                'use_decaying_avg_baseline': args.use_decay_baseline,
-                # 'nn_baseline': critic,
-                # 'nn_baseline_input': th.cat([th.FloatTensor(s), th.FloatTensor([i])]).detach()
+                'use_decaying_avg_baseline': args.use_decay_baseline and not args.use_nn_baseline,
+                'nn_baseline': critic,
+                'nn_baseline_input': th.cat([p, g, th.FloatTensor([i])]).detach()
             }},
         )
         r = compute_reward(a, p, g)
@@ -84,6 +86,16 @@ def create_policy_net(nb_layers, layer_size):
         + [nn.Linear(layer_size, 2)]
     )
 
+def create_critic_net(nb_layers, layer_size):
+    return nn.Sequential(*
+        [nn.Linear(5, layer_size), nn.LeakyReLU(),]
+        + sum([
+            [nn.Linear(layer_size, layer_size), nn.LeakyReLU()]
+            for _ in range(nb_layers)
+        ], [])
+        + [nn.Linear(layer_size, 2)]
+    )
+
 
 def plot_elbo(losses):
     p, = plt.plot(losses)
@@ -95,17 +107,29 @@ def plot_elbo(losses):
     plt.show()
 
 
-def save_everything(args, policy, losses):
+def save_everything(args, policy, critic, losses):
     path = os.path.join('runs', '%s__%s' % (time.strftime("%Y-%m-%d_%H-%M-%S"), args.exp_name))
     os.makedirs(path, exist_ok=True)
+    
+    # save nets
     th.save(policy.state_dict(), os.path.join(path, 'policy.pt'))
-    plt.savefig(os.path.join(path, 'elbo.png'))
+    if critic is not None:
+        th.save(critic.state_dict(), os.path.join(path, 'critic.pt'))
+
+    # copy the current version of file (TODO: need to copy it at the start of the experiment though)
     shutil.copy2(__file__, os.path.join(path, os.path.basename(__file__)))
-    with open(os.path.join(path, 'args.json'), 'w') as fargs:
-        json.dump(vars(args), fargs, indent=4)
+
+    # saving the ELBO graph as both image and JSON
+    plt.savefig(os.path.join(path, 'elbo.png'))
     with open(os.path.join(path, 'losses.json'), 'w') as flosses:
         json.dump(losses, flosses, indent=4)
-    time.sleep(1000)
+
+    # save all the command-line arguments
+    with open(os.path.join(path, 'args.json'), 'w') as fargs:
+        json.dump(vars(args), fargs, indent=4)
+    
+    # wait for the user to see the ELBO figure and then close it
+    input("Press [enter] to close the program...")
 
 
 def get_args():
@@ -115,17 +139,23 @@ def get_args():
     parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
     parser.add_argument("--nb_layers", type=int, default=4)
     parser.add_argument("--layer_size", type=int, default=16)
+    parser.add_argument("--critic_nb_layers", type=int, default=4)
+    parser.add_argument("--critic_layer_size", type=int, default=16)
     parser.add_argument("--nb_steps", type=int, default=1000)
     parser.add_argument("--nb_particles", type=int, default=10)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--policy_stdev", type=float, default=0.5)
     parser.add_argument("--ep_len", type=int, default=10)
     parser.add_argument("--use_decay_baseline", type=str2bool, default=False)
+    parser.add_argument("--use_nn_baseline", type=str2bool, default=False)
     return parser.parse_args()
 
 
 def train(args):
     policy = create_policy_net(nb_layers=args.nb_layers, layer_size=args.layer_size)
+    critic = None
+    if args.use_nn_baseline:
+        critic = create_critic_net(nb_layers=args.critic_nb_layers, layer_size=args.critic_layer_size)
 
     pyro.clear_param_store()
     svi = pyro.infer.SVI(model=rl_model,
@@ -136,11 +166,11 @@ def train(args):
     losses = []
     for t in range(args.nb_steps):
         # step() takes a single gradient step and returns an estimate of the loss
-        losses.append(svi.step(policy, args))
+        losses.append(svi.step(policy, critic, args))
         print('\rStep %d' % (t+1), end='')
 
     plot_elbo(losses)
-    save_everything(args, policy, losses)
+    save_everything(args, policy, critic, losses)
 
 
 def load(args):
@@ -148,9 +178,10 @@ def load(args):
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
     )
+    critic = None  # TODO: load critic from file if exists
     rewards = []
     for i in range(args.nb_steps):
-        rewards.append(rl_guide(policy, args)[-1].item())
+        rewards.append(rl_guide(policy, critic, args)[-1].item())
     print(sum(rewards) / args.ep_len / args.nb_steps)
     if args.debug:
         import ipdb
