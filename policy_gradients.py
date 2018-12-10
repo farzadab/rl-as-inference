@@ -259,7 +259,7 @@ class MEPG_Loss(torch.nn.Module):
         for time in reversed(range(trajectory_length-1)):
             # cumulative reward starting from time = time
             cumulative_rollout[time,:] = cumulative_rollout[time+1,:] + (self.discount**time) * trajectories_reward_tensor[:,time] \
-                                                                      - (self.discount**time) * alpha*logliklihood_tensor[time,:]
+                                                                      - (self.discount**time) * self.alpha*logliklihood_tensor[time,:]
             simple_cumuroll[time,:] = simple_cumuroll[time+1,:] + (self.discount**time) * trajectories_reward_tensor[:,time]
 
             # x =  state realization , and y = score for that state
