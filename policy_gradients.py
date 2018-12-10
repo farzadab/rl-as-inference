@@ -264,7 +264,7 @@ class MEPG_Loss(torch.nn.Module):
 
             # x =  state realization , and y = score for that state
             x[:, time*simulations:(time+1)*simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
-            y[time*simulations:(time+1)*simulations] = simple_cumuroll[time,:]
+            y[time*simulations:(time+1)*simulations] = simple_cumuroll[time,:] / (self.discount**time)
 
         # train baseline function
         base_line = self.Baseline_approximation(x, y, 6)
@@ -538,8 +538,8 @@ def main():
     # initialization stuff
     epochs = 100
     trajectories_per_epoch = 25
-    trajectory_length = 50
-    discount = 0.9
+    trajectory_length = 25
+    discount = 1.0
 
     """ MAX ENTROPY POLICY GRADIENTS WITH BASELINE APPROXIMATION """
     # lets try this with max ent policy gradients
