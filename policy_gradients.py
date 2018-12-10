@@ -1,17 +1,3 @@
-import os
-import numpy as np
-import torch
-import torch.nn as nn
-import scipy.stats as st
-
-import pyro
-from pyro.distributions import Normal
-from pyro.infer import SVI, Trace_ELBO
-from pyro.optim import Adam
-# for CI testing
-smoke_test = ('CI' in os.environ)
-pyro.enable_validation(True)
-
 # gym environment
 from envs.pointmass import PointMass
 import time
@@ -30,17 +16,13 @@ import torchvision.transforms as transforms
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.distributions import kl
-# pyro stuff for prob-proj
-import pyro
-import pyro.distributions as dist
-from pyro.infer import SVI, Trace_ELBO
-from pyro.optim import Adam
-from pyro.contrib.autoguide import AutoDiagonalNormal
+
 # to fix pythons garbage
 from copy import deepcopy
 import random
 from multiprocessing import Pool
-#
+import pyro.distributions as dist
+
 # torch.manual_seed(7)
 # np.random.seed(7)
 # random.seed(7)
@@ -174,8 +156,8 @@ class MEPG_Loss(torch.nn.Module):
 
             baseline = BaselineModel(state_size, 1)
             self.base_line = baseline
-            epochs = 5000
-            l_rate = 0.1
+            epochs = 1000
+            l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
 
@@ -199,14 +181,14 @@ class MEPG_Loss(torch.nn.Module):
                 loss.backward() # back props
                 optimiser.step() # update the parameters
 
-                if epoch%1000==0:
+                if epoch%100==0:
                     print(np.floor(100*epoch/epochs), "% percent complete")
                     print("current loss", loss)
 
         else:
             baseline = self.base_line
-            epochs = 500
-            l_rate = 0.1
+            epochs = 200
+            l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
 
@@ -319,6 +301,9 @@ def train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, traj
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
+    # set bias to zero in order to give the model better start
+    reg_model.linear.bias.data = 0*reg_model.linear.bias.data
+    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
 
     print("Max entorpy policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
@@ -388,7 +373,10 @@ def train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, traj
             print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
             print("current loss gradient: "  + str(loss))
             print("current cumulative reward: "  + str(avg))
+            print("current parameters: ")
             print(reg_model.linear.weight, reg_model.linear.bias)
+            print("current gradients: ")
+            print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
 
     # print and return
     print("Algorithm complete!")
@@ -399,12 +387,15 @@ def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, traj
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
+    # set bias to zero in order to give the model better start
+    reg_model.linear.bias.data = 0*reg_model.linear.bias.data
+    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
 
     print("Max entorpy natural policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
 
     # set standard deviation for normal distsq
-    sd = 1*torch.eye(2)
+    sd = 10*torch.eye(2)
 
     # set optimizer
     optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
@@ -422,7 +413,7 @@ def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, traj
     cooling = lambda alpha: alpha/1.05
 
     # initialize loss function class
-    loss_mod = MEPG_Loss(sd, alpha)
+    loss_mod = MEPG_Loss(sd, alpha, discount)
 
     # initialize tensors for grad approximation
     Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
@@ -521,7 +512,294 @@ def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, traj
             print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
             print("current loss gradient: "  + str(loss))
             print("current cumulative reward: "  + str(avg))
+            print("current parameters: ")
             print(reg_model.linear.weight, reg_model.linear.bias)
+            print("current gradients: ")
+            print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
+
+    # print and return
+    print("Algorithm complete!")
+    return reg_model.linear.weight, reg_model.linear.bias
+
+def train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length):
+
+    """ INITIALIZATIONS """
+    # initial variables for regression model
+    reg_model = LinearRegressionModel(6,2)
+    # set bias to zero in order to give the model better start
+    reg_model.linear.bias.data = 0*reg_model.linear.bias.data
+    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
+
+    print("Max entorpy natural policy gradients initialized!")
+    print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
+
+    # set standard deviation for normal distsq
+    sd = 10*torch.eye(2)
+
+    # set optimizer
+    optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
+    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.5)
+    #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
+
+    # initialize tensors
+    trajectory_states, trajectory_actions, trajectory_rewards = simulator(trajectory_length).simulate_trajectory()
+    trajectories_state_tensor = torch.zeros([trajectories_per_epoch, len(trajectory_states[:,0]), trajectory_length])
+    trajectories_action_tensor = torch.zeros([trajectories_per_epoch, len(trajectory_actions[:,0]), trajectory_length])
+    trajectories_reward_tensor = torch.zeros([trajectories_per_epoch, trajectory_length])
+
+    # cooling function to reduce stochasticity of gradient near optimal solutions
+    alpha = 1
+    cooling = lambda alpha: alpha/1.05
+
+    # initialize loss function class
+    loss_mod = MEPG_Loss(sd, alpha, discount)
+
+    # initialize tensors for grad approximation
+    Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
+    Y = torch.zeros((trajectories_per_epoch), requires_grad=False)
+
+    # apply PG iteratively
+    for epoch in range(epochs):
+
+        """ SIMULATE TRAJECTORIES UNDER CURRENT POLICY """
+        # update alpha
+        alpha = cooling(alpha)
+
+        # create policy function
+        policy = lambda state: dist.MultivariateNormal(reg_model(torch.tensor(state)), sd).sample()
+
+        # generate simulator
+        sim = simulator(trajectory_length, policy)
+
+        # initialize Fisher information for each parameter set
+        FI = torch.zeros((14, 14), requires_grad=False)
+
+        # create temp variables W, b describing regression model
+        W = deepcopy(reg_model.linear.weight)
+        b = deepcopy(reg_model.linear.bias)
+
+        # data to approximate gradient with
+        for trajectory_set in range(trajectories_per_epoch):
+            # [simulation #, value, time step]
+            trajectory_states, trajectory_actions, trajectory_rewards = sim.simulate_trajectory()
+            trajectories_state_tensor[trajectory_set,:,:] = trajectory_states
+            trajectories_action_tensor[trajectory_set,:,:] = trajectory_actions
+            trajectories_reward_tensor[trajectory_set,:] = trajectory_rewards
+
+            """ APPROXIMATE FISCHER INFORMATION"""
+            # compute sum of log_prob of states in trajectory wrt W,b
+            trajectory_log_prob = 0.0
+
+            for t in range(trajectory_length):
+                # [value, timestep]
+                trajectory_log_prob = trajectory_log_prob + dist.MultivariateNormal(torch.mv(W,trajectory_states[:,t]) + b, sd).log_prob(trajectory_actions[:,t])
+
+            # also compute cumulative reward over trjectory subtract baseline
+            cumulative_reward_tensor = sum(trajectory_rewards)
+
+            # compute gradient of that sum using backwards
+            trajectory_log_prob.backward()
+
+            # store values for Y
+            Y[trajectory_set] = cumulative_reward_tensor
+
+            # store values for Z
+            Z[:, trajectory_set] = torch.cat([W.grad.reshape(12,-1), b.grad.reshape(2,1)], 0).view(-1)
+
+            # update approximation of G
+            FI = FI + torch.ger(Z[:, trajectory_set], Z[:, trajectory_set])
+
+            # # set gradient data to zero
+            W.grad = W.grad*0
+            b.grad = b.grad*0
+
+        # normalize Fisher information
+        FI = FI/(trajectories_per_epoch*trajectory_length)
+
+        """ PERFORM OPTIMIZATION STEP ON OBJECTIVE """
+        # loss objective being minimized
+        loss = loss_mod(reg_model, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor)
+
+        # zero the parameter gradients
+        reg_model.linear.weight.grad = None
+        reg_model.linear.bias.grad = None
+
+        # backprop through computation graph
+        loss.backward()
+
+        """ COMPUTE POSTERIOR ESTIMATE OF GRADIENT """
+        # calculate covariance
+        sigma = 1
+        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(G.inverse(),Z))
+        C = (K + sigma*torch.eye(K.size()[0])).inverse()
+        ZC = torch.mm(Z, C)
+        posterior_g = torch.mv(ZC,Y)
+
+        """ UPDATE THE GRADIENTS OF THE PARAMETERS THEN STEP"""
+        # update weight and bias gradients
+        reg_model.linear.weight.grad = posterior_g[:12].reshape(2,6)
+        reg_model.linear.bias.grad = posterior_g[12:].reshape(-1)
+
+        # step optimizer
+        optimizer.step()
+
+        """ PRINT INFO """
+        # print info
+        if epoch%1==0:
+            avg = cumulative_reward(trajectories_reward_tensor, trajectory_length, trajectories_per_epoch)
+            print("epoch: " + str(epoch))
+            print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
+            print("current loss gradient: "  + str(loss))
+            print("current cumulative reward: "  + str(avg))
+            print("current parameters: ")
+            print(reg_model.linear.weight, reg_model.linear.bias)
+            print("current gradients: ")
+            print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
+
+    # print and return
+    print("Algorithm complete!")
+    return reg_model.linear.weight, reg_model.linear.bias
+
+def train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length):
+
+    """ INITIALIZATIONS """
+    # initial variables for regression model
+    reg_model = LinearRegressionModel(6,2)
+    # set bias to zero in order to give the model better start
+    reg_model.linear.bias.data = 0*reg_model.linear.bias.data
+    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
+
+    print("Max entorpy natural policy gradients initialized!")
+    print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
+
+    # set standard deviation for normal distsq
+    sd = 10*torch.eye(2)
+
+    # set optimizer
+    optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
+    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.5)
+    #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
+
+    # initialize tensors
+    trajectory_states, trajectory_actions, trajectory_rewards = simulator(trajectory_length).simulate_trajectory()
+    trajectories_state_tensor = torch.zeros([trajectories_per_epoch, len(trajectory_states[:,0]), trajectory_length])
+    trajectories_action_tensor = torch.zeros([trajectories_per_epoch, len(trajectory_actions[:,0]), trajectory_length])
+    trajectories_reward_tensor = torch.zeros([trajectories_per_epoch, trajectory_length])
+
+    # cooling function to reduce stochasticity of gradient near optimal solutions
+    alpha = 1
+    cooling = lambda alpha: alpha/1.05
+
+    # initialize loss function class
+    loss_mod = MEPG_Loss(sd, alpha, discount)
+
+    # initialize tensors for grad approximation
+    Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
+    Y = torch.zeros((trajectories_per_epoch), requires_grad=False)
+
+    # apply PG iteratively
+    for epoch in range(epochs):
+
+        """ SIMULATE TRAJECTORIES UNDER CURRENT POLICY """
+        # update alpha
+        alpha = cooling(alpha)
+
+        # create policy function
+        policy = lambda state: dist.MultivariateNormal(reg_model(torch.tensor(state)), sd).sample()
+
+        # generate simulator
+        sim = simulator(trajectory_length, policy)
+
+        # initialize Fisher information for each parameter set
+        FI = torch.zeros((14, 14), requires_grad=False)
+
+        # create temp variables W, b describing regression model
+        W = deepcopy(reg_model.linear.weight)
+        b = deepcopy(reg_model.linear.bias)
+
+        # data to approximate gradient with
+        for trajectory_set in range(trajectories_per_epoch):
+            # [simulation #, value, time step]
+            trajectory_states, trajectory_actions, trajectory_rewards = sim.simulate_trajectory()
+            trajectories_state_tensor[trajectory_set,:,:] = trajectory_states
+            trajectories_action_tensor[trajectory_set,:,:] = trajectory_actions
+            trajectories_reward_tensor[trajectory_set,:] = trajectory_rewards
+
+            """ APPROXIMATE FISCHER INFORMATION"""
+            # compute sum of log_prob of states in trajectory wrt W,b
+            trajectory_log_prob = 0.0
+
+            for t in range(trajectory_length):
+                # [value, timestep]
+                trajectory_log_prob = trajectory_log_prob + dist.MultivariateNormal(torch.mv(W,trajectory_states[:,t]) + b, sd).log_prob(trajectory_actions[:,t])
+
+            # also compute cumulative reward over trjectory subtract baseline
+            cumulative_reward_tensor = sum(trajectory_rewards)
+
+            # compute gradient of that sum using backwards
+            trajectory_log_prob.backward()
+
+            # store values for Y
+            Y[trajectory_set] = cumulative_reward_tensor
+
+            # store values for Z
+            Z[:, trajectory_set] = torch.cat([W.grad.reshape(12,-1), b.grad.reshape(2,1)], 0).view(-1)
+
+            # update approximation of G
+            FI = FI + torch.ger(Z[:, trajectory_set], Z[:, trajectory_set])
+
+            # # set gradient data to zero
+            W.grad = W.grad*0
+            b.grad = b.grad*0
+
+        # normalize Fisher information
+        FI = FI/(trajectories_per_epoch*trajectory_length)
+
+        """ PERFORM OPTIMIZATION STEP ON OBJECTIVE """
+        # loss objective being minimized
+        loss = loss_mod(reg_model, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor)
+
+        # zero the parameter gradients
+        reg_model.linear.weight.grad = None
+        reg_model.linear.bias.grad = None
+
+        # backprop through computation graph
+        loss.backward()
+
+        """ COMPUTE POSTERIOR ESTIMATE OF GRADIENT """
+        # calculate covariance
+        sigma = 1
+        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(G.inverse(),Z))
+        C = (K + sigma*torch.eye(K.size()[0])).inverse()
+        ZC = torch.mm(Z, C)
+        posterior_g = torch.mv(ZC,Y)
+
+        """ COMPUTE NATURAL GRADIENTS """
+        # solve system of equations to get inv_FI times grad
+        FI_posterior_g = torch.gesv(g, FI)[0]
+        # get natural gradient
+        posterior_natural_grad = (2/(torch.dot(g.view(-1), FI_g.view(-1))))*FI_g.view(-1)
+
+        """ UPDATE THE GRADIENTS OF THE PARAMETERS THEN STEP"""
+        # update weight and bias gradients
+        reg_model.linear.weight.grad = posterior_natural_grad[:12].reshape(2,6)
+        reg_model.linear.bias.grad = posterior_natural_grad[12:].reshape(-1)
+
+        # step optimizer
+        optimizer.step()
+
+        """ PRINT INFO """
+        # print info
+        if epoch%1==0:
+            avg = cumulative_reward(trajectories_reward_tensor, trajectory_length, trajectories_per_epoch)
+            print("epoch: " + str(epoch))
+            print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
+            print("current loss gradient: "  + str(loss))
+            print("current cumulative reward: "  + str(avg))
+            print("current parameters: ")
+            print(reg_model.linear.weight, reg_model.linear.bias)
+            print("current gradients: ")
+            print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
 
     # print and return
     print("Algorithm complete!")
@@ -536,17 +814,17 @@ def main():
 
     """ INITIALIZATIONS """
     # initialization stuff
-    epochs = 100
-    trajectories_per_epoch = 25
-    trajectory_length = 25
-    discount = 1.0
+    epochs = 50
+    trajectories_per_epoch = 200
+    trajectory_length = 10
+    discount = 0.8
 
     """ MAX ENTROPY POLICY GRADIENTS WITH BASELINE APPROXIMATION """
     # lets try this with max ent policy gradients
     W, b = train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
     print(W, b)
     # set up simulation
-    policy = lambda state: dist.Normal(torch.mv(W,state) + b, 1).sample()
+    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
     sim = simulator(500, policy)
 
     # create a simulation or 10
@@ -554,12 +832,51 @@ def main():
     for i in range(3):
         sim.render_trajectory()
 
-    """ MAX ENTROPY NATURAL POLICY GRADIENTS """
+    """ MAX ENTROPY NATURAL POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
     # lets try this with bayesian / natural policy gradients
     W, b = train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
     print(W, b)
     # set up simulation
-    policy = lambda state: dist.Normal(torch.mv(W,state) + b, 1).sample()
+    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    sim = simulator(500, policy)
+
+    # create a simulation or 10
+    input("Press Enter to see what the trajectories look like...")
+    for i in range(3):
+        sim.render_trajectory()
+
+    """ BAYESIAN MAX ENTROPY NATURAL POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
+    # lets try this with bayesian / natural policy gradients
+    W, b = train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
+    print(W, b)
+    # set up simulation
+    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    sim = simulator(500, policy)
+
+    # create a simulation or 10
+    input("Press Enter to see what the trajectories look like...")
+    for i in range(3):
+        sim.render_trajectory()
+
+    """ BAYESIAN MAX ENTROPY BAYESIAN POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
+    # lets try this with bayesian / natural policy gradients
+    W, b = train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
+    print(W, b)
+    # set up simulation
+    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    sim = simulator(500, policy)
+
+    # create a simulation or 10
+    input("Press Enter to see what the trajectories look like...")
+    for i in range(3):
+        sim.render_trajectory()
+
+    """ BAYESIAN MAX ENTROPY BAYESIAN NATURAL POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
+    # lets try this with bayesian / natural policy gradients
+    W, b = train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
+    print(W, b)
+    # set up simulation
+    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
     sim = simulator(500, policy)
 
     # create a simulation or 10
