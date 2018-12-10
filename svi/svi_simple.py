@@ -20,6 +20,7 @@ import pyro.distributions as dist
 
 from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
+from utils.args import str2bool
 from envs.pointmass import PointMass
 from .tracegraph_elbo import TraceGraph_ELBO
 from .distributions import UnnormExpBernoulli, InfiniteUniform
@@ -61,6 +62,11 @@ def rl_guide(policy, args):
                 policy(th.cat([p, g])),
                 args.policy_stdev
             ),
+            infer={'baseline': {
+                'use_decaying_avg_baseline': args.use_decay_baseline,
+                # 'nn_baseline': critic,
+                # 'nn_baseline_input': th.cat([th.FloatTensor(s), th.FloatTensor([i])]).detach()
+            }},
         )
         r = compute_reward(a, p, g)
         crew += r
@@ -105,7 +111,7 @@ def save_everything(args, policy, losses):
 def get_args():
     parser = argparse.ArgumentParser(description="Simple test3: SVI for RL")
     parser.add_argument("--load_path", type=str, default='')
-    parser.add_argument("--manual_debug", type=bool, default=False)
+    parser.add_argument("--debug", type=str2bool, default=False)
     parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
     parser.add_argument("--nb_layers", type=int, default=4)
     parser.add_argument("--layer_size", type=int, default=16)
@@ -114,6 +120,7 @@ def get_args():
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--policy_stdev", type=float, default=0.5)
     parser.add_argument("--ep_len", type=int, default=10)
+    parser.add_argument("--use_decay_baseline", type=str2bool, default=False)
     return parser.parse_args()
 
 
@@ -124,7 +131,7 @@ def train(args):
     svi = pyro.infer.SVI(model=rl_model,
                          guide=rl_guide,
                          optim=pyro.optim.Adam({"lr": args.lr}),
-                         loss=pyro.infer.Trace_ELBO(num_particles=args.nb_particles))
+                         loss=pyro.infer.TraceGraph_ELBO(num_particles=args.nb_particles))
 
     losses = []
     for t in range(args.nb_steps):
@@ -141,13 +148,13 @@ def load(args):
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
     )
-    if args.manual_debug:
-        import ipdb
-        ipdb.set_trace()
     rewards = []
     for i in range(args.nb_steps):
         rewards.append(rl_guide(policy, args)[-1].item())
     print(sum(rewards) / args.ep_len / args.nb_steps)
+    if args.debug:
+        import ipdb
+        ipdb.set_trace()
 
 
 def main():
