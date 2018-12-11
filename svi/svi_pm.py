@@ -29,14 +29,16 @@ from .svi_simple import save_everything, plot_elbo, get_args
 
 def init_state(env):
     env.reset()
-    mx_pos = th.ones(1) * env.max_position
-    mx_vel = th.ones(1) * env.max_speed
-    env.state[0:1] = p = pyro.sample("s", dist.Uniform(-1 * mx_pos, mx_pos))[0]
-    env.state[1:2] = g = pyro.sample("g", dist.Uniform(-1 * mx_pos, mx_pos))[0]
-    env.state[2:3] = v = pyro.sample("v", dist.Uniform(-1 * mx_vel, mx_vel))[0]
+    mx_pos = th.ones(env.dim) * env.max_position
+    mx_vel = th.ones(env.dim) * env.max_speed
+    env.state[        0:  env.dim] = p = pyro.sample("s", dist.Uniform(-1 * mx_pos, mx_pos))
+    env.state[  env.dim:2*env.dim] = g = pyro.sample("g", dist.Uniform(-1 * mx_pos, mx_pos))
+    env.state[2*env.dim:3*env.dim] = v = pyro.sample("v", dist.Uniform(-1 * mx_vel, mx_vel))
     return env.state
 
-def compute_reward(a, p, g):
+def compute_reward(a, s, args):
+    p = s[           0:  args.env_dim]
+    g = s[args.env_dim:2*args.env_dim]
     return -1 * (a - (th.FloatTensor(g) - th.FloatTensor(p))).pow(2).sum()
 
 def rl_model(env, _policy, _critic, args):
@@ -46,7 +48,7 @@ def rl_model(env, _policy, _critic, args):
         a = pyro.sample("a_%d" % i, InfiniteUniform(1))
         # reward is the distance to the correct direction
         s, _, _, _ = env.step(a.detach())
-        r = compute_reward(a, s[0:1], s[1:2])
+        r = compute_reward(a, s, args)
         O_dist = UnnormExpBernoulli(th.FloatTensor([r / args.ep_len]))
         pyro.sample("O_%d" % i, O_dist, obs=1)
         crew += r
@@ -81,40 +83,39 @@ def rl_guide(env, policy, critic, args):
         s, _, _, _ = env.step(a.detach())
         if args.render:
             env.render()
-            time.sleep(env.dt)
-        r = compute_reward(a, s[0:1], s[1:2])
+            time.sleep(env.dt / 2)
+        r = compute_reward(a, s, args)
         crew += r
 
     return th.cat([a.detach(), th.FloatTensor([crew])])
 
 
-
-def create_policy_net(nb_layers, layer_size):
+def create_policy_net(args):
     return nn.Sequential(*
-        [nn.Linear(3, layer_size), nn.LeakyReLU(),]
+        [nn.Linear(3*args.env_dim, args.layer_size), nn.LeakyReLU(),]
         + sum([
-            [nn.Linear(layer_size, layer_size), nn.LeakyReLU()]
-            for _ in range(nb_layers)
+            [nn.Linear(args.layer_size, args.layer_size), nn.LeakyReLU()]
+            for _ in range(args.nb_layers)
         ], [])
-        + [nn.Linear(layer_size, 1)]
+        + [nn.Linear(args.layer_size, args.env_dim)]
     )
 
-def create_critic_net(nb_layers, layer_size):
+def create_critic_net(args):
     return nn.Sequential(*
-        [nn.Linear(4, layer_size), nn.LeakyReLU(),]
+        [nn.Linear(3*args.env_dim+1, args.critic_layer_size), nn.LeakyReLU(),]
         + sum([
-            [nn.Linear(layer_size, layer_size), nn.LeakyReLU()]
-            for _ in range(nb_layers)
+            [nn.Linear(args.critic_layer_size, args.critic_layer_size), nn.LeakyReLU()]
+            for _ in range(args.critic_nb_layers)
         ], [])
-        + [nn.Linear(layer_size, 2)]
+        + [nn.Linear(args.critic_layer_size, args.env_dim)]
     )
 
 def train(args):
-    env = PointMass()  # we don't care about the reward since we're not using it
-    policy = create_policy_net(nb_layers=args.nb_layers, layer_size=args.layer_size)
+    env = PointMass(dim=args.env_dim)  # we don't care about the reward since we're not using it
+    policy = create_policy_net(args)
     critic = None
     if args.use_nn_baseline:
-        critic = create_critic_net(nb_layers=args.critic_nb_layers, layer_size=args.critic_layer_size)
+        critic = create_critic_net(args)
 
     pyro.clear_param_store()
     svi = pyro.infer.SVI(model=rl_model,
@@ -133,8 +134,8 @@ def train(args):
 
 
 def load(args):
-    env = PointMass()  # we don't care about the reward since we're not using it
-    policy = create_policy_net(nb_layers=args.nb_layers, layer_size=args.layer_size)
+    env = PointMass(dim=args.env_dim)  # we don't care about the reward since we're not using it
+    policy = create_policy_net(args)
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
     )
@@ -160,6 +161,7 @@ def get_args():
     parser.add_argument("--load_path", type=str, default='')
     parser.add_argument("--debug", type=str2bool, default=False)
     parser.add_argument("--render", type=str2bool, default=False)
+    parser.add_argument("--env_dim", type=int, default=1)
     parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
     parser.add_argument("--nb_layers", type=int, default=4)
     parser.add_argument("--layer_size", type=int, default=16)
