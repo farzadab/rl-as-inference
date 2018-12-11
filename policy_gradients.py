@@ -215,8 +215,8 @@ class MEPG_Loss(torch.nn.Module):
         y = torch.zeros([self.trajectory_length*self.simulations])
 
         # calculate cumulative running average for states ahead + subtract entropy term
-        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] - self.alpha*logliklihood_tensor[self.trajectory_length-1,:] \
-                                                        - trajectories_reward_tensor[:,self.trajectory_length-2]
+        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] \
+                                                         + self.alpha*logliklihood_tensor[self.trajectory_length-1,:]
 
         # calculate first term in the values used in baseline estimator x = [state, time-instance] y = [cumulative reward,  time-instance]
         y[(self.trajectory_length - 1)*self.simulations:self.trajectory_length*self.simulations] = cumulative_rollout[self.trajectory_length-1,:]
@@ -228,9 +228,9 @@ class MEPG_Loss(torch.nn.Module):
 
             # cumulative reward starting from time = time
             cumulative_rollout[time,:] = trajectories_reward_tensor[:,time] \
-                                         - trajectories_reward_tensor[:,time-1] \
-                                         - self.alpha * logliklihood_tensor[time,:] \
-                                         + self.discount * cumulative_rollout[time+1,:]
+                                         + self.discount * cumulative_rollout[time+1,:] \
+                                         + self.alpha * logliklihood_tensor[time,:]
+
 
             # x =  state realization , and y = score for that state
             x[:6, (time - 1)*self.simulations:time*self.simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
@@ -238,7 +238,7 @@ class MEPG_Loss(torch.nn.Module):
             y[time*self.simulations:(time+1)*self.simulations] = cumulative_rollout[time,:]
 
         # all zeroth step stuff
-        cumulative_rollout[0,:] = trajectories_reward_tensor[:,0] - self.alpha*logliklihood_tensor[0,:]
+        cumulative_rollout[0,:] = trajectories_reward_tensor[:,0] + self.alpha*logliklihood_tensor[0,:]
         x[:6, 0:self.simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
         x[6,  0:self.simulations] = time
         y[0:self.simulations] = cumulative_rollout[time,:]
@@ -865,13 +865,13 @@ ACTION_DIMENSIONS = 2
 STATE_ACTION_DIMENSIONS = 8
 
 def main():
-
+    # Optimal W is sth like [-1 0; 0  -1; 1 0; 0 1; .. ; ..] and bias should almost be 0.
     """ INITIALIZATIONS """
     # initialization stuff
-    epochs = 1000
-    trajectories_per_epoch = 25
-    trajectory_length = 25
-    discount = 0.8
+    epochs = 500
+    trajectories_per_epoch = 30
+    trajectory_length = 5
+    discount = 0.9
     sd = 1*torch.eye(2)
     # and to load the session again:
 
