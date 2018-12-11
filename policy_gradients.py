@@ -231,7 +231,7 @@ class MEPG_Loss(torch.nn.Module):
 
         # calculate cumulative running average for states ahead + subtract entropy term
         cumulative_rollout[trajectory_length-1,:] = trajectories_reward_tensor[:,trajectory_length-1] - self.alpha*logliklihood_tensor[trajectory_length-1,:]
-        cumulative_rollout[trajectory_length-1,:] = trajectories_reward_tensor[:,trajectory_length-1]
+        simple_cumuroll[trajectory_length-1,:] = trajectories_reward_tensor[:,trajectory_length-1]
 
         # calculate first term in the values used in baseline estimator x = [state, time-instance] y = [cumulative reward,  time-instance]
         y[(trajectory_length - 1)*simulations:trajectory_length*simulations] = trajectories_reward_tensor[:,trajectory_length-1]
