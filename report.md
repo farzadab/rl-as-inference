@@ -165,4 +165,11 @@ Experiments:
 # 8th test: 1D PointMass
 
 Report:
-  - 0.097
+  - T=10: MSE: 0.097 (and it actually works!)   [1]
+  - T=20: MSE: 0.019 (works even better, why??) [2]
+
+Experiments:
+  - [20] `2018-12-10_14-35-15__pm1d_T10_P200`
+  - [21] `2018-12-10_15-30-23__pm1d_T20_P200`
+
+Commit: e1463d27bc959c94132db76055cfac597a6e6d4b

@@ -30,6 +30,7 @@ from .svi_simple import save_everything, plot_elbo, get_args
 def init_state(env):
     env.reset()
     mx_pos = th.ones(1) * env.max_position
+    mx_vel = th.ones(1) * env.max_speed
     env.state[0:1] = p = pyro.sample("s", dist.Uniform(-1 * mx_pos, mx_pos))[0]
     env.state[1:2] = g = pyro.sample("g", dist.Uniform(-1 * mx_pos, mx_pos))[0]
     env.state[2:3] = v = pyro.sample("v", dist.Uniform(-1 * mx_vel, mx_vel))[0]
@@ -78,7 +79,7 @@ def rl_guide(env, policy, critic, args):
             }},
         )
         s, _, _, _ = env.step(a.detach())
-        if args.debug:
+        if args.render:
             env.render()
             time.sleep(env.dt)
         r = compute_reward(a, s[0:1], s[1:2])
@@ -153,6 +154,25 @@ def main():
         load(args)
     else:
         train(args)
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Simple test3: SVI for RL")
+    parser.add_argument("--load_path", type=str, default='')
+    parser.add_argument("--debug", type=str2bool, default=False)
+    parser.add_argument("--render", type=str2bool, default=False)
+    parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
+    parser.add_argument("--nb_layers", type=int, default=4)
+    parser.add_argument("--layer_size", type=int, default=16)
+    parser.add_argument("--critic_nb_layers", type=int, default=4)
+    parser.add_argument("--critic_layer_size", type=int, default=16)
+    parser.add_argument("--nb_steps", type=int, default=1000)
+    parser.add_argument("--nb_particles", type=int, default=10)
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--policy_stdev", type=float, default=0.5)
+    parser.add_argument("--ep_len", type=int, default=10)
+    parser.add_argument("--use_decay_baseline", type=str2bool, default=False)
+    parser.add_argument("--use_nn_baseline", type=str2bool, default=False)
+    return parser.parse_args()
 
 
 if __name__ == '__main__':
