@@ -152,10 +152,17 @@ Experiments:
 ## 7th test: larger episode lengths
 
 Report:
-  - T=20: MSE: 0.15 converges after 0.6K
+  - T=20: MSE: 0.15 converges after 0.6K [18]
   - T=30:
   - T=50:
   - T=100:
-  - T=20, lr=0.0005: MSE: 0.10 converges after 1.1K (almost double)
+  - T=20, lr=0.0005: MSE: 0.10 converges after 1.1K (almost double) [19]
 
-Experiments: 
+Experiments:
+  - [18] `2018-12-10_13-32-58__T20_200_LNN`
+  - [19] `2018-12-10_13-33-51__T20_200_LNN_small-LR`
+
+# 8th test: 1D PointMass
+
+Report:
+  - 0.097

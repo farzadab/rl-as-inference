@@ -29,10 +29,10 @@ from .svi_simple import save_everything, plot_elbo, get_args
 
 def init_state(env):
     env.reset()
-    mx_pos = th.ones(1)
+    mx_pos = th.ones(1) * env.max_position
     env.state[0:1] = p = pyro.sample("s", dist.Uniform(-1 * mx_pos, mx_pos))[0]
     env.state[1:2] = g = pyro.sample("g", dist.Uniform(-1 * mx_pos, mx_pos))[0]
-    env.state[2:3] = 0
+    env.state[2:3] = v = pyro.sample("v", dist.Uniform(-1 * mx_vel, mx_vel))[0]
     return env.state
 
 def compute_reward(a, p, g):
@@ -65,16 +65,22 @@ def rl_guide(env, policy, critic, args):
         a = pyro.sample(
             "a_%d" % i,
             NonreparameterizedNormal(
-                policy(th.FloatTensor(s)),
+                policy(th.FloatTensor(s) / env.max_position) * env.max_torque,
                 args.policy_stdev
             ),
             infer={'baseline': {
                 'use_decaying_avg_baseline': args.use_decay_baseline and not args.use_nn_baseline,
                 'nn_baseline': critic,
-                'nn_baseline_input': th.cat([th.FloatTensor(s), th.FloatTensor([i])]).detach()
+                'nn_baseline_input': th.cat([
+                    th.FloatTensor(s) / env.max_position,
+                    th.FloatTensor([i]) / args.ep_len
+                ]).detach()
             }},
         )
         s, _, _, _ = env.step(a.detach())
+        if args.debug:
+            env.render()
+            time.sleep(env.dt)
         r = compute_reward(a, s[0:1], s[1:2])
         crew += r
 
