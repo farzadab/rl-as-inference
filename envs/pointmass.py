@@ -42,10 +42,15 @@ class PointMass(gym.Env):
         'pot'     : dict(vel=0, pos=0, goal=0,   pexp=0, pot=1, const=0),
     }
 
-    def __init__(self, max_steps=100, randomize_goal=True, writer=None, reset=True, reward_style='velocity'):
+    def __init__(
+            self, max_steps=100, randomize_goal=True,
+            writer=None, reset=True, reward_style='velocity',
+            dim=2
+        ):
         self.max_steps = max_steps
         self.randomize_goal = randomize_goal
         self.images = []  # for saving video if needed
+        self.dim = dim
         
         if reward_style in self.reward_styles:
             self.reward_style = self.reward_styles[reward_style]
@@ -60,13 +65,16 @@ class PointMass(gym.Env):
         self.viewer = None
         self.plot = None
 
-        # self.obs_size = 2
-        self.act_size = 1
+        # self.obs_size = 2 * self.dim
+        # self.act_size = self.dim
         
-        high_action = self.max_torque * np.ones(self.act_size)
+        high_action = self.max_torque * np.ones(self.dim)
         self.action_space = gym.spaces.Box(low=-high_action, high=high_action, dtype=np.float32)
 
-        self.obs_high = np.concatenate([self.max_position * np.ones(2), self.max_speed * np.ones(1)])
+        self.obs_high = np.concatenate([
+            self.max_position * np.ones(2 * self.dim),
+            self.max_speed * np.ones(self.dim)
+        ])
         self.observation_space = gym.spaces.Box(low=-self.obs_high, high=self.obs_high, dtype=np.float32)
 
         self.seed()
@@ -92,9 +100,9 @@ class PointMass(gym.Env):
         self.i_step += 1
 
         # state: (px, py, gx, gy, vx, vy)
-        p = self.state[0:1]
-        g = self.state[1:2]
-        v = self.state[2:3]
+        p = self.state[         0:  self.dim]
+        g = self.state[  self.dim:2*self.dim]
+        v = self.state[2*self.dim:3*self.dim]
         
         reward = 0
 
@@ -175,11 +183,11 @@ class PointMass(gym.Env):
         self.images = []  # clean up the recorder
         high = self.obs_high
         self.state = self.np_random.uniform(low=-high, high=high)
-        if np.linalg.norm(self.state[-1:]) > self.max_speed:
-            self.state[-1:] = self.state[-1:] / np.linalg.norm(self.state[-1:]) * self.max_speed
+        if np.linalg.norm(self.state[-self.dim:]) > self.max_speed:
+            self.state[-self.dim:] /= np.linalg.norm(self.state[-self.dim:]) * self.max_speed
         if not self.randomize_goal:
-            self.state[1:2] = 0
-        self.last_u = np.array([0])
+            self.state[self.dim:2*self.dim] = 0
+        self.last_u = np.zeros(self.dim)
         self.i_step = 0
         # self.last_u = None
         return self._get_obs()
@@ -208,11 +216,14 @@ class PointMass(gym.Env):
         return [point, goal]
     
     def _do_transforms(self):
-        self.point_transform.set_translation(self.state[0], 0)
-        self.goal_transform.set_translation(self.state[1], 0)
+        c_pos = np.pad(self.state[       0:  self.dim], (0, 2-self.dim), 'constant')
+        g_pos = np.pad(self.state[self.dim:2*self.dim], (0, 2-self.dim), 'constant')
+        last_u = np.pad(self.last_u, (0, 2-self.dim), 'constant')
+        self.point_transform.set_translation(*c_pos)
+        self.goal_transform.set_translation(*g_pos)
         # if self.last_u:
-        self.img_trans.set_translation(self.state[0], 0)
-        self.img_trans.set_rotation(np.arctan2(0, self.last_u[0]))
+        self.img_trans.set_translation(*c_pos)
+        self.img_trans.set_rotation(np.arctan2(last_u[1], last_u[0]))
         scale = np.linalg.norm(self.last_u) / self.max_torque * 2
         self.img_trans.set_scale(scale, scale)
 
