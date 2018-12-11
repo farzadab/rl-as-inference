@@ -47,8 +47,9 @@ def rl_model(env, _policy, _critic, args):
     for i in range(args.ep_len):
         a = pyro.sample("a_%d" % i, InfiniteUniform(1))
         # reward is the distance to the correct direction
-        s, _, _, _ = env.step(a.detach())
-        r = compute_reward(a, s, args)
+        s, r, _, _ = env.step(a.detach())
+        if not args.env_reward:
+            r = compute_reward(a, s, args)
         O_dist = UnnormExpBernoulli(th.FloatTensor([r / args.ep_len]))
         pyro.sample("O_%d" % i, O_dist, obs=1)
         crew += r
@@ -80,12 +81,13 @@ def rl_guide(env, policy, critic, args):
                 ]).detach()
             }},
         )
-        s, _, _, _ = env.step(a.detach())
+        s, r, _, _ = env.step(a.detach())
+        if not args.env_reward:
+            r = compute_reward(a, s, args)
+        crew += r
         if args.render:
             env.render()
             time.sleep(env.dt / 2)
-        r = compute_reward(a, s, args)
-        crew += r
 
     return th.cat([a.detach(), th.FloatTensor([crew])])
 
@@ -111,7 +113,7 @@ def create_critic_net(args):
     )
 
 def train(args):
-    env = PointMass(dim=args.env_dim)  # we don't care about the reward since we're not using it
+    env = PointMass(dim=args.env_dim, reward_style=args.env_reward or 'pot')
     policy = create_policy_net(args)
     critic = None
     if args.use_nn_baseline:
@@ -134,7 +136,7 @@ def train(args):
 
 
 def load(args):
-    env = PointMass(dim=args.env_dim)  # we don't care about the reward since we're not using it
+    env = PointMass(dim=args.env_dim, reward_style=args.env_reward or 'pot')
     policy = create_policy_net(args)
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
@@ -162,6 +164,7 @@ def get_args():
     parser.add_argument("--debug", type=str2bool, default=False)
     parser.add_argument("--render", type=str2bool, default=False)
     parser.add_argument("--env_dim", type=int, default=1)
+    parser.add_argument("--env_reward", type=str, default='')
     parser.add_argument("--exp_name", type=str, default=os.path.splitext(os.path.basename(__file__))[0])
     parser.add_argument("--nb_layers", type=int, default=4)
     parser.add_argument("--layer_size", type=int, default=16)
