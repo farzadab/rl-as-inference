@@ -38,7 +38,7 @@ class simulator():
         # policy given - function of the current state
         self.policy = policy
         # environment
-        self.env = PointMass(reward_style='distsq', randomize_goal = False)
+        self.env = PointMass(reward_style='distsq')
 
     def render_trajectory(self):
 
@@ -54,10 +54,6 @@ class simulator():
             time.sleep(env.dt * 0.5)
 
     def simulate_trajectory(self):
-
-        # initialize environment
-        env = PointMass(reward_style='distsq')
-
         # get initial state
         state = self.env.reset()
 
@@ -146,7 +142,7 @@ class MEPG_Loss(torch.nn.Module):
 
             baseline = BaselineModel(state_size, 1)
             self.base_line = baseline
-            epochs = 1000
+            epochs = 2000
             l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
@@ -177,7 +173,7 @@ class MEPG_Loss(torch.nn.Module):
 
         else:
             baseline = self.base_line
-            epochs = 50
+            epochs = 100
             l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
@@ -213,7 +209,6 @@ class MEPG_Loss(torch.nn.Module):
 
         # initialize cumulative running average for states ahead
         cumulative_rollout = torch.zeros([self.trajectory_length, self.simulations])
-        simple_cumuroll = torch.zeros([self.trajectory_length, self.simulations])
 
         # initialize score function info
         x = torch.zeros([7, self.trajectory_length*self.simulations])
@@ -221,7 +216,6 @@ class MEPG_Loss(torch.nn.Module):
 
         # calculate cumulative running average for states ahead + subtract entropy term
         cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] - self.alpha*logliklihood_tensor[self.trajectory_length-1,:]
-        simple_cumuroll[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1]
 
         # calculate first term in the values used in baseline estimator x = [state, time-instance] y = [cumulative reward,  time-instance]
         y[(self.trajectory_length - 1)*self.simulations:self.trajectory_length*self.simulations] = trajectories_reward_tensor[:,self.trajectory_length-1]
@@ -235,20 +229,18 @@ class MEPG_Loss(torch.nn.Module):
             cumulative_rollout[time,:] = trajectories_reward_tensor[:,time] \
                                          - self.alpha * logliklihood_tensor[time,:] \
                                          + self.discount * cumulative_rollout[time+1,:]
-            simple_cumuroll[time,:] = trajectories_reward_tensor[:,time] \
-                                      + self.discount * simple_cumuroll[time+1,:]
 
             # x =  state realization , and y = score for that state
             x[:6, (time - 1)*self.simulations:time*self.simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
             x[6, (time - 1)*self.simulations:time*self.simulations] = time
-            y[time*self.simulations:(time+1)*self.simulations] = simple_cumuroll[time,:]
+            y[time*self.simulations:(time+1)*self.simulations] = cumulative_rollout[time,:]
 
         # all zeroth step stuff
         cumulative_rollout[0,:] = trajectories_reward_tensor[:,0] - self.alpha*logliklihood_tensor[0,:]
         simple_cumuroll[0,:] = 0
         x[:6, 0:self.simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
         x[6,  0:self.simulations] = time
-        y[0:self.simulations] = simple_cumuroll[time,:]
+        y[0:self.simulations] = cumulative_rollout[time,:]
 
         # train baseline function
         base_line = self.Baseline_approximation(x, y, 7)
@@ -462,17 +454,12 @@ def train_natural_policy_gradient(sd, epochs, discount, trajectories_per_epoch, 
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
-    # set bias to zero in order to give the model better start
-    # reg_model.linear.bias.data = 0*reg_model.linear.bias.data
-    # reg_model.linear.weight.data = 0.1*reg_model.linear.weight.data
 
     print("Max entorpy natural policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
 
     # set optimizer
     optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
-    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.5)
-    #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
 
     # initialize tensors
     trajectory_states, trajectory_actions, trajectory_rewards = simulator(trajectory_length).simulate_trajectory()
@@ -482,7 +469,7 @@ def train_natural_policy_gradient(sd, epochs, discount, trajectories_per_epoch, 
 
     # cooling function to reduce stochasticity of gradient near optimal solutions
     alpha = 1
-    cooling = lambda alpha: alpha/1.05
+    cooling = lambda alpha: alpha/1.005
 
     # initialize loss function class
     loss_mod = MEPG_Loss(sd, alpha, discount)
@@ -880,7 +867,7 @@ def main():
 
     """ INITIALIZATIONS """
     # initialization stuff
-    epochs = 500
+    epochs = 5000
     trajectories_per_epoch = 5
     trajectory_length = 20
     discount = 1.0
