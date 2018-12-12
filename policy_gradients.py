@@ -32,21 +32,20 @@ import matplotlib.pyplot as plt
 
 class simulator():
 
-    def __init__(self, steps=500, policy = lambda state : np.random.rand(2) * np.ones(2), randomize_goal = False, use_cuda=False):
+    def __init__(self, steps=500, policy = lambda state : np.random.rand(2) * np.ones(2), randomize_goal1 = False, use_cuda=False):
         # length of trajectory
         self.steps = steps
         # policy given - function of the current state
         self.policy = policy
         # environment
-        self.env = PointMass(reward_style='distsq', randomize_goal = False)
+        self.env = PointMass(reward_style='distsq', randomize_goal = randomize_goal1)
 
     def render_trajectory(self):
 
-        env = PointMass(reward_style='distsq')
+        env = self.env
         state = env.reset()
         env.render()
         for i in range(self.steps):
-
             next_state, reward, done, extra = env.step(self.policy(torch.FloatTensor(state)))
             state = next_state
             print('Reward achieved:', -reward)
@@ -95,7 +94,7 @@ class LinearRegressionModel(nn.Module):
         out = self.linear(x)
         return out
 
-class MLPModel(nn.Module):
+class NN_Model(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(LinearRegressionModel, self).__init__()
         # Calling Super Class's constructor
@@ -162,7 +161,7 @@ class MEPG_Loss(torch.nn.Module):
 
             baseline = BaselineModel(state_size, 1)
             self.base_line = baseline
-            epochs = 2000
+            epochs = 1000
             l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
@@ -190,10 +189,11 @@ class MEPG_Loss(torch.nn.Module):
                 if epoch%100==0:
                     print(np.floor(100*epoch/epochs), "% percent complete")
                     print("current loss", loss)
+            print("baseline updated... loss at ", loss)
 
         else:
             baseline = self.base_line
-            epochs = 100
+            epochs = 1
             l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
@@ -217,16 +217,13 @@ class MEPG_Loss(torch.nn.Module):
 
                 loss.backward() # back props
                 optimiser.step() # update the parameters
+            print("baseline updated... loss at ", loss)
 
-        print("baseline updated... loss at ", loss)
         return baseline
 
     def Advantage_estimator(self, logliklihood_tensor, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
+
         """ COMPUTES ROLL OUT WITH MAX ENT REGULARIZATION """
-
-        # reward shaping
-        trajectories_reward_tensor = 10*trajectories_reward_tensor
-
         # initialize cumulative running average for states ahead
         cumulative_rollout = torch.zeros([self.trajectory_length, self.simulations])
 
@@ -235,7 +232,7 @@ class MEPG_Loss(torch.nn.Module):
         y = torch.zeros([self.trajectory_length*self.simulations])
 
         # calculate cumulative running average for states ahead + subtract entropy term
-        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] - trajectories_reward_tensor[:,self.trajectory_length-2] \
+        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] \
                                                          + self.alpha*logliklihood_tensor[self.trajectory_length-1,:]
 
         # calculate first term in the values used in baseline estimator x = [state, time-instance] y = [cumulative reward,  time-instance]
@@ -948,25 +945,16 @@ def main():
     # Optimal W is sth like [-1 0; 0  -1; 1 0; 0 1; .. ; ..] and bias should almost be 0.
     """ INITIALIZATIONS """
     # initialization stuff
-    epochs = 100
-    trajectories_per_epoch = 15
-    trajectory_length = 15
-    discount = 0.99
-    sd = 1*torch.eye(2)
+    epochs = 1000
+    trajectories_per_epoch = 50
+    trajectory_length = 25
+    discount = 0.5
+    sd = 10*torch.eye(2)
     # and to load the session again:
 
     """ MAX ENTROPY POLICY GRADIENTS WITH BASELINE APPROXIMATION """
     # lets try this with max ent policy gradients
     W, b, plot_info = train_max_ent_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length)
-
-    # # now lets try re-using our old guess as the new proir on actions
-    # for iter in range(1,50):
-    #     # still use wide variance to start though
-    #     W_new, b_new = train_regression(iterations, T, samples)
-    #     W = W + W_new
-    #     b = b + b_new
-    # W = W / 50
-    # b = b / 50
 
     # set up simulation
     policy = lambda state: torch.distributions.MultivariateNormal(torch.mv(W,state).detach() + b.detach(), sd).sample()
