@@ -235,7 +235,7 @@ class MEPG_Loss(torch.nn.Module):
         y = torch.zeros([self.trajectory_length*self.simulations])
 
         # calculate cumulative running average for states ahead + subtract entropy term
-        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] - trajectories_reward_tensor[:,self.trajectory_length-1] \
+        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] - trajectories_reward_tensor[:,self.trajectory_length-2] \
                                                          + self.alpha*logliklihood_tensor[self.trajectory_length-1,:]
 
         # calculate first term in the values used in baseline estimator x = [state, time-instance] y = [cumulative reward,  time-instance]
@@ -247,7 +247,7 @@ class MEPG_Loss(torch.nn.Module):
         for time in reversed(range(1, self.trajectory_length-1)):
 
             # cumulative reward starting from time = time
-            cumulative_rollout[time,:] = trajectories_reward_tensor[:,time+1] - trajectories_reward_tensor[:,time+1] \
+            cumulative_rollout[time,:] = trajectories_reward_tensor[:,time+1] - trajectories_reward_tensor[:,time] \
                                          + self.discount * cumulative_rollout[time+1,:] \
                                          + self.alpha * logliklihood_tensor[time,:]
 
@@ -959,9 +959,19 @@ def main():
     # lets try this with max ent policy gradients
     W, b, plot_info = train_max_ent_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length)
 
+    # # now lets try re-using our old guess as the new proir on actions
+    # for iter in range(1,50):
+    #     # still use wide variance to start though
+    #     W_new, b_new = train_regression(iterations, T, samples)
+    #     W = W + W_new
+    #     b = b + b_new
+    # W = W / 50
+    # b = b / 50
+
     # set up simulation
     policy = lambda state: torch.distributions.MultivariateNormal(torch.mv(W,state).detach() + b.detach(), sd).sample()
     sim = simulator(500, policy)
+
 
     # save file
     filename = 'policy_gradients_epochs_' + str(epochs) + '_sims_' +str(trajectories_per_epoch) + '_T_' + str(trajectory_length) + '_d_' + str(discount) + '.pkl'
