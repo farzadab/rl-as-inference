@@ -22,7 +22,7 @@ from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
 from utils.args import str2bool
 from envs.pointmass import PointMass
-from .tracegraph_elbo import TraceGraph_ELBO
+#from .tracegraph_elbo import TraceGraph_ELBO
 from .distributions import UnnormExpBernoulli, InfiniteUniform
 
 

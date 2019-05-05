@@ -22,7 +22,7 @@ from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
 from utils.args import str2bool
 from envs.pointmass import PointMass
-from .tracegraph_elbo import TraceGraph_ELBO
+#from .tracegraph_elbo import TraceGraph_ELBO
 from .distributions import UnnormExpBernoulli, InfiniteUniform
 from .svi_simple import save_everything, plot_elbo, get_args
 
@@ -88,6 +88,8 @@ def rl_guide(env, policy, critic, args):
         if args.render:
             env.render()
             time.sleep(env.dt / 2)
+    if args.render:
+        env.save_video_if_possible()
 
     return th.cat([a.detach(), th.FloatTensor([crew])])
 
@@ -141,8 +143,19 @@ def load(args):
     policy.load_state_dict(
         th.load(os.path.join(args.load_path, 'policy.pt'))
     )
-    critic = None  # TODO: load critic from file if exists
+    critic = create_critic_net(args)  # TODO: load critic from file if exists
+    print(env.dim, env.observation_space)
+    try:
+        critic.load_state_dict(th.load(os.path.join(args.load_path, 'critic.pt')))
+    except Exception as e:
+        print(e)
+        critic = None
     rewards = []
+    if args.render:
+        env.visualize_solution(
+            policy=lambda s: policy(th.FloatTensor(s) / env.max_position).detach() * env.max_torque,
+        #    value_func=(lambda s: critic(th.cat([th.FloatTensor(s) / env.max_position, th.FloatTensor([0])])).detach()[0]) if critic else None
+        )
     for i in range(args.nb_steps):
         rewards.append(rl_guide(env, policy, critic, args)[-1].item())
     print(sum(rewards) / args.ep_len / args.nb_steps)

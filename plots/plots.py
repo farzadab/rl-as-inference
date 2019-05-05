@@ -124,6 +124,7 @@ class SurfacePlot(Plot):
         self.subplot.set_ylabel('Y')
         empty = np.zeros((0,0))
         self.sc = self.subplot.plot_surface(empty, empty, empty, cmap=cm.coolwarm, alpha=0.8, edgecolors='none')
+        self.subplot.view_init(90,-90)
         self.subplot.set_xlim(*xlim)
         self.subplot.set_ylim(*ylim)
         self._redraw()

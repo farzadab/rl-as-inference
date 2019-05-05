@@ -154,22 +154,45 @@ Experiments:
 Report:
   - T=20: MSE: 0.15 converges after 0.6K [18]
   - T=30:
-  - T=50:
+  - T=50: MSE: 0.95 and the ELBO doesn't improve, not sure why [20]
   - T=100:
   - T=20, lr=0.0005: MSE: 0.10 converges after 1.1K (almost double) [19]
+
+Carry over:
+  ✔ No need to decrease the lr for now, let's go with lr=0.001
 
 Experiments:
   - [18] `2018-12-10_13-32-58__T20_200_LNN`
   - [19] `2018-12-10_13-33-51__T20_200_LNN_small-LR`
+  - [20] `2018-12-10_17-47-04__T50_200_LNN`
 
-# 8th test: 1D PointMass
+
+# 8th test: 1D PointMass (action-based reward)
 
 Report:
-  - T=10: MSE: 0.097 (and it actually works!)   [1]
-  - T=20: MSE: 0.019 (works even better, why??) [2]
+  - T=10: MSE: 0.097 (and it actually works!)   [21]
+  - T=20: MSE: 0.019 (works even better, why??) [22]
 
 Experiments:
-  - [20] `2018-12-10_14-35-15__pm1d_T10_P200`
-  - [21] `2018-12-10_15-30-23__pm1d_T20_P200`
+  - [21] `2018-12-10_14-35-15__pm1d_T10_P200`
+  - [22] `2018-12-10_15-30-23__pm1d_T20_P200`
 
 Commit: e1463d27bc959c94132db76055cfac597a6e6d4b
+
+
+# 9th test: 2D PointMass (action-based reward)
+
+Report:
+  - T=40: it works! It's not accurate, but works fine [23]
+
+Experiments:
+  - [23] `2018-12-10_22-39-07__pm2D_T40_P200`
+
+
+# 10th test: 2D PointMass (potential-based reward)
+
+Report:
+  - T=50: does not work + the ELBO does not improve
+  - T=100: 
+
+Experiments:

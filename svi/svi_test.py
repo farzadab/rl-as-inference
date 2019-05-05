@@ -10,6 +10,7 @@ import pyro
 import pyro.infer
 import pyro.optim
 import pyro.distributions as dist
+from pyro.distributions.testing.fakes import NonreparameterizedNormal
 
 from pyro.distributions.testing.fakes import NonreparameterizedNormal
 import pyro.poutine
@@ -30,7 +31,6 @@ def rl_model(env):
     for i in range(T):
         a = pyro.sample("a_%d" % i, dist.Uniform(-100 * th.ones(2), 100 * th.ones(2)))
         # a = pyro.sample("a_%d" % i, dist.Normal(th.zeros(2), 10 * th.ones(2)))
-        p_state = env.state
         _, r, _, _ = env.step(a.reshape(-1).detach().numpy())  # ignoring the `done` signal ...
         crew += r
         O_dist = FlexibleBernoulli(th.FloatTensor([r/T]).exp())
@@ -87,6 +87,7 @@ svi = pyro.infer.SVI(model=rl_model,
                      guide=rl_linear_guide,
                      optim=pyro.optim.Adam({"lr": 0.001}),
                      loss=TraceGraph_ELBO(num_particles=20))
+                     loss=pyro.infer.TraceGraph_ELBO(num_particles=20))
 
 # env = PointMass(reward_style='distsq')   # the 'distsq' reward is always negative
 env = PointMass(reward_style='pot')   # the 'pot-mvel' reward is always negative

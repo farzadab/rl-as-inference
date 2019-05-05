@@ -26,7 +26,7 @@ class PointMass(gym.Env):
     max_torque = 5.
     max_position = 20.
     treshold = 2.
-    dt = .1
+    dt = .03
     mass = .2
     metadata = {
         'render.modes' : ['human', 'rgb_array'],
@@ -164,7 +164,7 @@ class PointMass(gym.Env):
                     str(uuid.uuid4())[0:6]
                 ),
                 cv2.VideoWriter_fourcc(*'MPEG'),
-                int(1/self.dt + 1e-3),
+                int(2/self.dt + 1e-3),
                 vidsize
             )
             for image in self.images:
@@ -272,12 +272,17 @@ class PointMass(gym.Env):
         val = np.ones(points.shape[0])
         d = np.zeros((points.shape[0], 2))
         for i, p in enumerate(points):
-            # state = np.concatenate([p, [0] * (self.observation_space.shape[0] - 2)])
-            state = np.concatenate([p[0:1], [0], p[1:2]])
+            if self.dim == 1:
+                state = np.concatenate([p[0:], [0], p[1:2]])
+            else:
+                state = np.concatenate([p, [0] * (self.observation_space.shape[0] - 2)])
             if value_func is not None:
                 val[i] = value_func(state)
             if policy is not None:
-                d[i][0] = policy(state)
+                if self.dim == 1:
+                    d[i][0] = policy(state)
+                else:
+                    d[i] = policy(state)
 
         X, V = np.meshgrid(x,v)
         self.splot.update(X, V, val.reshape(len(x), -1))

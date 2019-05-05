@@ -58,20 +58,32 @@ class simulator():
 
         # initialize environment
         env = PointMass(reward_style='distsq')
+        # get initial state
         state = self.env.reset()
+        # get the corrosponding action for our current state
+        action = self.policy(torch.FloatTensor(state))
+        # get first step for reward exct.
+        state, reward, done, extra = self.env.step(action)
 
         # initialize trajectory
-        trajectory = []
+        trajectory_states = torch.zeros([len(state), self.steps])
+        trajectory_actions = torch.zeros([len(action), self.steps])
+        trajectory_rewards = torch.zeros([self.steps])
 
         # main for loop
         for i in range(self.steps):
-            action = self.policy(torch.FloatTensor(state))
-            prevstate = state
-            state, reward, done, extra = self.env.step(action)
-            # need to update draw from action
-            trajectory.append([state, prevstate, action, -reward])
 
-        return trajectory
+            # get the corrosponding action for our current state
+            action = self.policy(torch.FloatTensor(state))
+            # get first step for reward exct.
+            state, reward, done, extra = self.env.step(action)
+
+            # store a_t, s_t, and r_t
+            trajectory_states[:, i] = torch.FloatTensor(state)
+            trajectory_actions[:, i] = torch.FloatTensor(action)
+            trajectory_rewards[i] = reward
+
+        return trajectory_states, trajectory_actions, trajectory_rewards
 
 class NeuralNet(nn.Module):
 
@@ -176,121 +188,92 @@ def get_mean(net, x):
     # return mean
     return mean.detach()
 
-def my_gradient_function(net, trajectories):
-
+def max_ent_policy_gradient(net, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
     # becuase we are drawing state-action pairs we should be able to use sample mean
     sample_mean = 0
 
     # initialize distribution
     MVN = Param_MultivariateNormal(net)
 
-    # what is the length of trajectory
-    trajectory_len = len(trajectories[0])
-    trajectories_len = len(trajectories)
+    # get tensor size info
+    trajectory_length = len(trajectories_reward_tensor[0,:])
+    simulations =  len(trajectories_reward_tensor[:,0])
 
-    # outer expectaiton
-    time_sum = 0.0
+    # initialize tensor for log liklihood stuff
+    logliklihood_tensor = torch.zeros([trajectory_length, simulations])
 
-    # add all rewards ahead of it during backup
-    roll_out = 0.0
+    # generate tensor for log liklihood stuff
+    for time in range(trajectory_length):
+        for simulation in range(simulations):
+            # [simulation #, value, time step]
+            logliklihood_tensor[time,simulation] = MVN.evaluate_log_pdf(trajectories_action_tensor[simulation,:,time], trajectories_state_tensor[simulation,:,time])
 
-    # iterate through time step
-    for t in range(trajectory_len-1, -1, -1):
+    # calculate cumulative running average for states ahead
+    cumulative_rollout = torch.zeros([trajectory_length, simulations])
 
-        # reset sample mean for time step
-        expectation_time_t = 0.0
-        current_time_step_roll_out = 0.0
+    # calculate cumulative running average for states ahead + subtract entropy term
+    cumulative_rollout[trajectory_length-1,:] = trajectories_reward_tensor[:,trajectory_length-1] - logliklihood_tensor[trajectory_length-1,:]
+    for time in range(trajectory_length-1):
+        cumulative_rollout[time,:] = cumulative_rollout[time+1,:] + trajectories_reward_tensor[:,time] - logliklihood_tensor[time,:]
 
-        # iterate through all trajectories
-        for i in range(trajectories_len):
+    # subtract baseline
+    for time in range(trajectory_length):
+        cumulative_rollout[time,:] = cumulative_rollout[time,:] - trajectories_reward_tensor[:,time]
 
-            # get log probability of observation
-            log_q = MVN.evaluate_log_pdf(trajectories[i][t][2], torch.FloatTensor(trajectories[i][t][1]))
+    # detach cumulative reward from computation graph
+    detached_cumulative_rollout = cumulative_rollout.detach()
 
-            # update roll_out
-            current_time_step_roll_out = current_time_step_roll_out + trajectories[i][t][3] - log_q
+    # initialize expectation tensor
+    expectation_tensor = torch.zeros([trajectory_length])
 
-            # fix computation graph and add all roll out ahead
-            full_roll_out_ahead = current_time_step_roll_out.detach() + roll_out
+    # calculate instance of expectation for timestep then calc sample mean
+    for time in range(trajectory_length):
+        expectation_tensor[time] = torch.sum(torch.mv(detached_cumulative_rollout, logliklihood_tensor[time,:]))/simulations
 
-            # add value to expectation and subtract baseline from forward role out (b(s_t) = (T-t)*r(s_t))
-            expectation_time_t = expectation_time_t + log_q*(full_roll_out_ahead - (trajectory_len-1-t)*trajectories[i][t][3])
+    # sum accross time
+    sum_expectation_tensor = torch.sum(expectation_tensor)
 
-        # add roll out ahead to running calculation for backwards call
-        roll_out = roll_out + full_roll_out_ahead/trajectories_len
+    # return objective with rollout detached from computation graph
+    return sum_expectation_tensor
 
-        # add this average to out sum
-        time_sum = time_sum + expectation_time_t/trajectories_len
-
-    # we want the negative of this becuase the optimization method minimizes
-    return time_sum
-
-def TRPO_my_gradient_function(net, trajectories):
-    1
-def my_objective_function(net, trajectories):
-
+def cumulative_reward(net, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
     # becuase we are drawing state-action pairs we should be able to use sample mean
     sample_mean = 0
 
     # initialize distribution
     MVN = Param_MultivariateNormal(net)
 
-    # what is the length of trajectory
-    trajectory_len = len(trajectories[0])
-    trajectories_len = len(trajectories)
+    # get tensor size info
+    trajectory_length = len(trajectories_reward_tensor[0,:])
+    simulations =  len(trajectories_reward_tensor[:,0])
 
-    # iterate through time step
-    for t in range(trajectory_len):
+    # initialize tensor for log liklihood stuff
+    logliklihood_tensor = torch.zeros([trajectory_length, simulations])
 
-        # average for a time t
-        sample_mean = 0.0
+    # generate tensor for log liklihood stuff
+    for time in range(trajectory_length):
+        for simulation in range(simulations):
+            # [simulation #, value, time step]
+            logliklihood_tensor[time,simulation] = MVN.evaluate_log_pdf(trajectories_action_tensor[simulation,:,time], trajectories_state_tensor[simulation,:,time])
 
-        # iterate through all trajectories
-        for i in range(trajectories_len):
+    # initialize expectation tensor
+    expectation_tensor = torch.zeros([trajectory_length])
 
-            # get r(s_t,a_t), s_t, and a_t ~ q_theta(a_t|s_t)
-            state = torch.FloatTensor(trajectories[i][t][0])
-            prevstate = torch.FloatTensor(trajectories[i][t][1])
-            action = trajectories[i][t][2]
-            reward = trajectories[i][t][3]
+    # calculate instance of expectation for timestep then calc sample mean
+    for time in range(trajectory_length):
+        expectation_tensor[time] = torch.sum(trajectories_reward_tensor[:,time] - logliklihood_tensor[time,:])/simulations
 
-            # get log probability of observation
-            log_q = MVN.evaluate_log_pdf(action, prevstate)
+    # sum accross time
+    sum_expectation_tensor = torch.sum(expectation_tensor)
 
-            # add to roll out last term is constant.
-            sample_mean += reward - MVN.evaluate_log_pdf(action, prevstate)
+    # return objective with rollout detached from computation graph
+    return sum_expectation_tensor
 
-        # normalize then add to outer expection for a given time t
-        sample_mean += sample_mean/trajectories_len
+def max_ent_TRPO(net, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
+    # in progress
+    
+    return None
 
-    # we want the negative of this becuase the optimization method minimizes
-    return sample_mean/trajectory_len
-
-def cumulative_reward(net, trajectories):
-    # becuase we are drawing state-action pairs we should be able to use sample mean
-    sample_mean = 0
-
-    # initialize distribution
-    MVN = Param_MultivariateNormal(net)
-
-    # what is the length of trajectory
-    trajectory_len = len(trajectories[0])
-    trajectories_len = len(trajectories)
-
-    # average for a time t
-    sample_mean = 0.0
-
-    # iterate through all trajectories
-    for i in range(trajectories_len):
-
-        # iterate through time step
-        for t in range(trajectory_len):
-
-            # add to roll out last term is constant.
-            sample_mean += trajectories[i][t][3]
-
-    # we want the negative of this becuase the optimization method minimizes
-    return sample_mean/trajectories_len
 
 def train_network(epochs, trajectories_per_epoch, trajectory_length):
 
@@ -302,11 +285,19 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
     #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.5)
     #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
 
+    # initialize tensors things to make tensors generate-able
+    MVN = Param_MultivariateNormal(net)
+    policy = lambda s_t: MVN.sample(torch.tensor(s_t))
+    sim = simulator(trajectory_length, policy)
+
+    # initialize initialize tensors used below
+    trajectory_states, trajectory_actions, trajectory_rewards = sim.simulate_trajectory()
+    trajectories_state_tensor = torch.zeros([trajectories_per_epoch, len(trajectory_states[:,0]), trajectory_length])
+    trajectories_action_tensor = torch.zeros([trajectories_per_epoch, len(trajectory_actions[:,0]), trajectory_length])
+    trajectories_reward_tensor = torch.zeros([trajectories_per_epoch, trajectory_length])
+
     # iterate for set number of epochs
     for epoch in range(epochs):
-
-        # set running loss
-        expected_loss = 0.0
 
         # initialize distribution
         MVN = Param_MultivariateNormal(net)
@@ -317,11 +308,16 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
         # initialize simulation
         sim = simulator(trajectory_length, policy)
 
-        # generate trajectories
-        trajectories = [sim.simulate_trajectory() for i in range(trajectories_per_epoch)]
+        # now simulate all values and update initialized tensors
+        for trajectory_set in range(1,trajectories_per_epoch):
+            # [simulation #, value, time step]
+            trajectory_states, trajectory_actions, trajectory_rewards = sim.simulate_trajectory()
+            trajectories_state_tensor[trajectory_set,:,:] = trajectory_states
+            trajectories_action_tensor[trajectory_set,:,:] = trajectory_actions
+            trajectories_reward_tensor[trajectory_set,:] = trajectory_rewards
 
-        # approximate expectation
-        expected_loss = my_gradient_function(net, trajectories)
+        # approximate expectation using trajectories
+        expected_loss = my_gradient_function(net, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor)
 
         # zero the parameter gradients
         optimizer.zero_grad()
@@ -337,7 +333,7 @@ def train_network(epochs, trajectories_per_epoch, trajectory_length):
         print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
         # see how the objective function is improving
         if epoch%10==0:
-            average_reward = cumulative_reward(net, trajectories)
+            average_reward = cumulative_reward(net, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor)
             print("current cumulative reward: "  + str(average_reward))
             print("current loss gradient: "  + str(expected_loss))
 
