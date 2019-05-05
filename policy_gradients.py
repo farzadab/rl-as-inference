@@ -18,10 +18,13 @@ from torch.autograd import Variable
 from torch.distributions import kl
 
 # to fix pythons garbage
+import dill
 from copy import deepcopy
 import random
 from multiprocessing import Pool
 import pyro.distributions as dist
+
+import matplotlib.pyplot as plt
 
 # torch.manual_seed(7)
 # np.random.seed(7)
@@ -29,21 +32,20 @@ import pyro.distributions as dist
 
 class simulator():
 
-    def __init__(self, steps=500, policy = lambda state : np.random.rand(2) * np.ones(2), use_cuda=False):
+    def __init__(self, steps=500, policy = lambda state : np.random.rand(2) * np.ones(2), randomize_goal1 = False, use_cuda=False):
         # length of trajectory
         self.steps = steps
         # policy given - function of the current state
         self.policy = policy
         # environment
-        self.env = PointMass(reward_style='distsq')
+        self.env = PointMass(reward_style='distsq', randomize_goal = randomize_goal1)
 
     def render_trajectory(self):
 
-        env = PointMass(reward_style='distsq')
+        env = self.env
         state = env.reset()
         env.render()
         for i in range(self.steps):
-
             next_state, reward, done, extra = env.step(self.policy(torch.FloatTensor(state)))
             state = next_state
             print('Reward achieved:', -reward)
@@ -51,10 +53,6 @@ class simulator():
             time.sleep(env.dt * 0.5)
 
     def simulate_trajectory(self):
-
-        # initialize environment
-        env = PointMass(reward_style='distsq')
-
         # get initial state
         state = self.env.reset()
 
@@ -96,6 +94,26 @@ class LinearRegressionModel(nn.Module):
         out = self.linear(x)
         return out
 
+class NN_Model(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(LinearRegressionModel, self).__init__()
+        # Calling Super Class's constructor
+        self.linear1 = nn.Linear(input_dim, 16)
+        self.relu1 = nn.ReLU()
+        self.linear2 = nn.Linear(16, 16)
+        self.relu2 = nn.ReLU()
+        self.linear3 = nn.Linear(16, output_dim)
+
+    def forward(self, x):
+        # Here the forward pass is simply a linear function
+        out = self.linear(x)
+        out = self.linear1(out)
+        out = self.relu1(out)
+        out = self.linear2(out)
+        out = self.relu2(out)
+        out = self.linear3(out)
+        return out
+
 class BaselineModel(nn.Module):
 
     """ baseline make the score equal to zero (i.e. be equal to negative of sum of rewards) """
@@ -105,7 +123,7 @@ class BaselineModel(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(BaselineModel, self).__init__()
         # Calling Super Class's constructor
-        self.hidden_layer = 64
+        self.hidden_layer = 32
         self.linear1 = nn.Linear(input_dim, self.hidden_layer)
         self.relu1 = nn.ReLU()
         self.linear2 = nn.Linear(self.hidden_layer, self.hidden_layer)
@@ -121,31 +139,18 @@ class BaselineModel(nn.Module):
         out = self.linear3(out)
         return out
 
-def cumulative_reward(trajectories_reward_tensor, trajectory_length, simulations):
-
-    # initialize expectation tensor
-    expectation_tensor = torch.zeros([trajectory_length])
-
-    # calculate instance of expectation for timestep then calc sample mean
-    for time in range(trajectory_length):
-        expectation_tensor[time] = torch.sum(trajectories_reward_tensor[:,time])/simulations
-
-    # sum accross time
-    sum_expectation_tensor = torch.sum(expectation_tensor)
-
-    # return expected rewards across time
-    return sum_expectation_tensor
-
 class MEPG_Loss(torch.nn.Module):
 
     """ MAXIMUM ENTROPY POLICY GRADIENTS LOSS FUNCTION """
 
-    def __init__(self, sd, alpha, discount):
+    def __init__(self, sd, alpha, discount, trajectory_length, simulations):
 
         super(MEPG_Loss, self).__init__()
         self.sd = sd
         self.alpha = alpha
         self.discount = discount
+        self.trajectory_length = trajectory_length
+        self.simulations = simulations
         self.base_line = None
 
     def Baseline_approximation(self, x, y, state_size):
@@ -184,10 +189,11 @@ class MEPG_Loss(torch.nn.Module):
                 if epoch%100==0:
                     print(np.floor(100*epoch/epochs), "% percent complete")
                     print("current loss", loss)
+            print("baseline updated... loss at ", loss)
 
         else:
             baseline = self.base_line
-            epochs = 200
+            epochs = 1
             l_rate = 0.01
             # train to approximate average reward at state
             criterion = nn.MSELoss()# Mean Squared Loss
@@ -211,52 +217,57 @@ class MEPG_Loss(torch.nn.Module):
 
                 loss.backward() # back props
                 optimiser.step() # update the parameters
+            print("baseline updated... loss at ", loss)
 
-        print("baseline updated... loss at ", loss)
         return baseline
 
-    def Advantage_estimator(self, trajectory_length, simulations, logliklihood_tensor, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
+    def Advantage_estimator(self, logliklihood_tensor, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
+
         """ COMPUTES ROLL OUT WITH MAX ENT REGULARIZATION """
-
-        # reward shaping
-        trajectories_reward_tensor = torch.exp(trajectories_reward_tensor)
-
         # initialize cumulative running average for states ahead
-        cumulative_rollout = torch.zeros([trajectory_length, simulations])
-        simple_cumuroll = torch.zeros([trajectory_length, simulations])
+        cumulative_rollout = torch.zeros([self.trajectory_length, self.simulations])
 
         # initialize score function info
-        x = torch.zeros([6, trajectory_length*simulations])
-        y = torch.zeros([trajectory_length*simulations])
+        x = torch.zeros([7, self.trajectory_length*self.simulations])
+        y = torch.zeros([self.trajectory_length*self.simulations])
 
         # calculate cumulative running average for states ahead + subtract entropy term
-        cumulative_rollout[trajectory_length-1,:] = trajectories_reward_tensor[:,trajectory_length-1] - self.alpha*logliklihood_tensor[trajectory_length-1,:]
-        simple_cumuroll[trajectory_length-1,:] = trajectories_reward_tensor[:,trajectory_length-1]
+        cumulative_rollout[self.trajectory_length-1,:] = trajectories_reward_tensor[:,self.trajectory_length-1] \
+                                                         + self.alpha*logliklihood_tensor[self.trajectory_length-1,:]
 
         # calculate first term in the values used in baseline estimator x = [state, time-instance] y = [cumulative reward,  time-instance]
-        y[(trajectory_length - 1)*simulations:trajectory_length*simulations] = trajectories_reward_tensor[:,trajectory_length-1]
-        x[:, (trajectory_length - 1)*simulations:trajectory_length*simulations] = trajectories_state_tensor[:, :, trajectory_length-1].transpose(0,1)
+        y[(self.trajectory_length - 1)*self.simulations:self.trajectory_length*self.simulations] = cumulative_rollout[self.trajectory_length-1,:]
+        x[:6, (self.trajectory_length - 1)*self.simulations:self.trajectory_length*self.simulations] = trajectories_state_tensor[:, :, self.trajectory_length-1].transpose(0,1)
+        x[6, (self.trajectory_length - 1)*self.simulations:self.trajectory_length*self.simulations] = self.trajectory_length-1
 
         # primary loop
-        for time in reversed(range(trajectory_length-1)):
+        for time in reversed(range(1, self.trajectory_length-1)):
+
             # cumulative reward starting from time = time
-            cumulative_rollout[time,:] = cumulative_rollout[time+1,:] + (self.discount**time) * trajectories_reward_tensor[:,time] \
-                                                                      - (self.discount**time) * self.alpha*logliklihood_tensor[time,:]
-            simple_cumuroll[time,:] = simple_cumuroll[time+1,:] + (self.discount**time) * trajectories_reward_tensor[:,time]
+            cumulative_rollout[time,:] = trajectories_reward_tensor[:,time+1] - trajectories_reward_tensor[:,time] \
+                                         + self.discount * cumulative_rollout[time+1,:] \
+                                         + self.alpha * logliklihood_tensor[time,:]
 
             # x =  state realization , and y = score for that state
-            x[:, time*simulations:(time+1)*simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
-            y[time*simulations:(time+1)*simulations] = simple_cumuroll[time,:] / (self.discount**time)
+            x[:6, (time - 1)*self.simulations:time*self.simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
+            x[6, (time - 1)*self.simulations:time*self.simulations] = time
+            y[time*self.simulations:(time+1)*self.simulations] = cumulative_rollout[time,:]
+
+        # all zeroth step stuff
+        cumulative_rollout[0,:] = trajectories_reward_tensor[:,1]-trajectories_reward_tensor[:,0] + self.alpha*logliklihood_tensor[0,:]
+        x[:6, 0:self.simulations] = trajectories_state_tensor[:, :, time].transpose(0,1)
+        x[6,  0:self.simulations] = time
+        y[0:self.simulations] = cumulative_rollout[time,:]
 
         # train baseline function
-        base_line = self.Baseline_approximation(x, y, 6)
+        base_line = self.Baseline_approximation(x, y, 7)
 
         #calculate baseline
         current_baseline = torch.cat([base_line(x_i) for x_i in x.transpose(0,1)])
 
         # subtract baseline from cumulative reward
-        for time in range(trajectory_length):
-            cumulative_rollout[time,:] = cumulative_rollout[time,:] - current_baseline[time*simulations:(time + 1)*simulations]
+        for time in range(self.trajectory_length):
+            cumulative_rollout[time,:] = cumulative_rollout[time,:] - current_baseline[time*self.simulations:(time + 1)*self.simulations]
 
         # detach cumulative reward from computation graph
         advantage = cumulative_rollout.detach()
@@ -266,50 +277,106 @@ class MEPG_Loss(torch.nn.Module):
     def forward(self, model, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor):
 
         """ CALCULATE LOG LIKLIHOOD OF TRAJECTORIES """
-        # get tensor size info
-        trajectory_length = len(trajectories_reward_tensor[0,:])
-        simulations =  len(trajectories_reward_tensor[:,0])
         # initialize tensor for log liklihood stuff
-        logliklihood_tensor = torch.zeros([trajectory_length, simulations])
+        logliklihood_tensor = torch.zeros([self.trajectory_length, self.simulations])
         # generate tensor for log liklihood stuff
-        for time in range(trajectory_length):
-            for simulation in range(simulations):
+        for time in range(self.trajectory_length):
+            for simulation in range(self.simulations):
                 # [simulation #, value, time step]
                 logliklihood_tensor[time,simulation] = \
-                dist.MultivariateNormal(model(trajectories_state_tensor[simulation,:,time]), self.sd).log_prob(trajectories_action_tensor[simulation,:,time])
+                torch.distributions.MultivariateNormal(model(trajectories_state_tensor[simulation,:,time]), self.sd).log_prob(trajectories_action_tensor[simulation,:,time])
 
         """ CALCULATE ADVANTAGE REGULARIZED BY ENTROPY """
-        A_hat = self.Advantage_estimator(trajectory_length, simulations, logliklihood_tensor, \
-                                         trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor)
+        A_hat = self.Advantage_estimator(logliklihood_tensor, trajectories_state_tensor, trajectories_action_tensor, trajectories_reward_tensor)
 
         """ CALCULATE POLICY GRADIENT OBJECTIVE """
         # initialize expectation tensor
-        expectation_tensor = torch.zeros([trajectory_length])
+        expectation_tensor = torch.zeros([self.trajectory_length])
 
         # calculate instance of expectation for timestep then calc sample mean
-        for time in range(trajectory_length):
-            expectation_tensor[time] = torch.sum(torch.mv(A_hat, logliklihood_tensor[time,:]))/simulations
+        for time in range(self.trajectory_length):
+            expectation_tensor[time] = torch.sum(torch.mv(A_hat, logliklihood_tensor[time,:]))/self.simulations
 
         # sum accross time
-        sum_expectation_tensor = torch.sum(expectation_tensor)/trajectory_length
+        sum_expectation_tensor = torch.sum(expectation_tensor)/self.trajectory_length
 
         """ RETURN """
         return sum_expectation_tensor
 
-def train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length):
+def cumulative_reward(trajectories_reward_tensor, trajectory_length, simulations):
+
+    # initialize expectation tensor
+    expectation_tensor = torch.zeros([trajectory_length])
+
+    # calculate instance of expectation for timestep then calc sample mean
+    for time in range(trajectory_length):
+        expectation_tensor[time] = torch.sum(trajectories_reward_tensor[:,time])/simulations
+
+    # sum accross time
+    sum_expectation_tensor = torch.sum(expectation_tensor)
+
+    # return expected rewards across time
+    return sum_expectation_tensor
+
+def plot_agent_information(plot_info):
+
+    """ GET EVERYTHING FROM STORAGE STORAGE """
+    cumulateive_reward_plotting = plot_info[0]
+    weights_plotting = plot_info[1]
+    bias_plotting = plot_info[2]
+    elbo_loss_function_plotting = plot_info[3]
+    weights_grad_plotting = plot_info[4]
+    bias_grad_plotting = plot_info[5]
+
+    """ PLOT EVERYTHING """
+    plt.figure(1)
+    plt.plot(cumulateive_reward_plotting.squeeze().numpy())
+    plt.title("Cumulative reward per epoch")
+    plt.show()
+
+    plt.figure(2)
+    for i in range(12):
+        plt.plot(weights_plotting[i,:].squeeze().numpy())
+    plt.title("Weights per epoch")
+    plt.show()
+
+    plt.figure(3)
+    plt.plot(bias_plotting[0,:].squeeze().numpy())
+    plt.plot(bias_plotting[1,:].squeeze().numpy())
+    plt.title("Bias per epoch")
+    plt.show()
+
+    plt.figure(4)
+    plt.plot(elbo_loss_function_plotting.squeeze().numpy())
+    plt.title("Elbo loss per epoch")
+    plt.show()
+
+    plt.figure(5)
+    for i in range(12):
+        plt.plot(weights_grad_plotting[i,:].squeeze().numpy())
+    plt.title("Weights gradient per epoch")
+    plt.show()
+
+    plt.figure(6)
+    plt.plot(bias_plotting[0,:].squeeze().numpy())
+    plt.plot(bias_plotting[1,:].squeeze().numpy())
+    plt.title("Gradient of Bias Parameters per epoch")
+    plt.show()
+
+    # input("press enter to close and continue.")
+
+def train_max_ent_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length):
 
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
+
     # set bias to zero in order to give the model better start
     reg_model.linear.bias.data = 0*reg_model.linear.bias.data
-    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
+    reg_model.linear.weight.data = 0.1*reg_model.linear.weight.data
 
     print("Max entorpy policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
-
-    # set standard deviation for normal distribution of model
-    sd = 10*torch.eye(2)
 
     # set optimizer
     optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
@@ -324,10 +391,18 @@ def train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, traj
 
     # cooling function to reduce stochasticity of gradient near optimal solutions
     alpha = 1
-    cooling = lambda alpha: alpha/1.0
+    cooling = lambda alpha: alpha/1.05
 
     # initialize loss function class
-    loss_mod = MEPG_Loss(sd, alpha, discount)
+    loss_mod = MEPG_Loss(sd, alpha, discount, trajectory_length, trajectories_per_epoch)
+
+    """ INITIALIZE STORAGE """
+    cumulateive_reward_plotting = torch.zeros((1, epochs))
+    weights_plotting = torch.zeros((12, epochs))
+    bias_plotting = torch.zeros((2, epochs))
+    weights_grad_plotting = torch.zeros((12, epochs))
+    bias_grad_plotting = torch.zeros((2, epochs))
+    elbo_loss_function_plotting = torch.zeros((1, epochs))
 
     # apply PG iteratively
     for epoch in range(epochs):
@@ -371,36 +446,42 @@ def train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, traj
             avg = cumulative_reward(trajectories_reward_tensor, trajectory_length, trajectories_per_epoch)
             print("epoch: " + str(epoch))
             print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
-            print("current loss gradient: "  + str(loss))
+            print("current loss evaluation: "  + str(loss))
             print("current cumulative reward: "  + str(avg))
             print("current parameters: ")
             print(reg_model.linear.weight, reg_model.linear.bias)
             print("current gradients: ")
             print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
 
+        """ ADD RELEVENT INFO TO STORAGE"""
+        cumulateive_reward_plotting[:, epoch] = avg
+        weights_plotting[:, epoch] = reg_model.linear.weight.reshape(-1)
+        bias_plotting[:, epoch] = reg_model.linear.bias.reshape(-1)
+        elbo_loss_function_plotting[:, epoch] = loss
+        weights_grad_plotting[:, epoch] = reg_model.linear.weight.grad.reshape(-1)
+        bias_grad_plotting[:, epoch] = reg_model.linear.bias.grad.reshape(-1)
+
     # print and return
     print("Algorithm complete!")
-    return reg_model.linear.weight, reg_model.linear.bias
+    return reg_model.linear.weight, reg_model.linear.bias, \
+    [cumulateive_reward_plotting.detach(),  weights_plotting.detach(), bias_plotting.detach(), elbo_loss_function_plotting.detach(), \
+    weights_grad_plotting.detach(), bias_grad_plotting.detach()]
 
-def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length):
+def train_natural_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length):
 
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
-    # set bias to zero in order to give the model better start
-    reg_model.linear.bias.data = 0*reg_model.linear.bias.data
-    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
 
     print("Max entorpy natural policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
 
-    # set standard deviation for normal distsq
-    sd = 10*torch.eye(2)
-
     # set optimizer
     optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
-    #optimizer = optim.SGD(net.parameters(), lr=0.05, momentum=0.5)
-    #optimizer = optim.Adadelta(net.parameters(), lr=1.0, rho=0.9, eps=1e-06, weight_decay=0)
+
+    # set bias to zero in order to give the model better start
+    reg_model.linear.bias.data = 0*reg_model.linear.bias.data
+    reg_model.linear.weight.data = 0.1*reg_model.linear.weight.data
 
     # initialize tensors
     trajectory_states, trajectory_actions, trajectory_rewards = simulator(trajectory_length).simulate_trajectory()
@@ -413,7 +494,15 @@ def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, traj
     cooling = lambda alpha: alpha/1.05
 
     # initialize loss function class
-    loss_mod = MEPG_Loss(sd, alpha, discount)
+    loss_mod = MEPG_Loss(sd, alpha, discount, trajectory_length, trajectories_per_epoch)
+
+    """ INITIALIZE STORAGE """
+    cumulateive_reward_plotting = torch.zeros((1, epochs))
+    weights_plotting = torch.zeros((12, epochs))
+    bias_plotting = torch.zeros((2, epochs))
+    weights_grad_plotting = torch.zeros((12, epochs))
+    bias_grad_plotting = torch.zeros((2, epochs))
+    elbo_loss_function_plotting = torch.zeros((1, epochs))
 
     # initialize tensors for grad approximation
     Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
@@ -492,6 +581,8 @@ def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, traj
         # get gradient
         g = torch.cat((reg_model.linear.weight.grad.view(12,-1), reg_model.linear.bias.grad.view(2,1)), 0)
         # solve system of equations to get inv_FI times grad
+        print(FI)
+        print(g)
         FI_g = torch.gesv(g, FI)[0]
         # get natural gradient
         natural_grad = (2/(torch.dot(g.view(-1), FI_g.view(-1))))*FI_g.view(-1)
@@ -517,24 +608,31 @@ def train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, traj
             print("current gradients: ")
             print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
 
+        """ ADD RELEVENT INFO TO STORAGE"""
+        cumulateive_reward_plotting[:, epoch] = avg
+        weights_plotting[:, epoch] = reg_model.linear.weight.reshape(-1)
+        bias_plotting[:, epoch] = reg_model.linear.bias.reshape(-1)
+        elbo_loss_function_plotting[:, epoch] = loss
+        weights_grad_plotting[:, epoch] = reg_model.linear.weight.grad.reshape(-1)
+        bias_grad_plotting[:, epoch] = reg_model.linear.bias.grad.reshape(-1)
+
     # print and return
     print("Algorithm complete!")
-    return reg_model.linear.weight, reg_model.linear.bias
+    return reg_model.linear.weight, reg_model.linear.bias, \
+    [cumulateive_reward_plotting.detach(),  weights_plotting.detach(), bias_plotting.detach(), elbo_loss_function_plotting.detach(), \
+    weights_grad_plotting.detach(), bias_grad_plotting.detach()]
 
-def train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length):
+def train_bayesian_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length):
 
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
     # set bias to zero in order to give the model better start
     reg_model.linear.bias.data = 0*reg_model.linear.bias.data
-    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
+    reg_model.linear.weight.data = 0.1*reg_model.linear.weight.data
 
     print("Max entorpy natural policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
-
-    # set standard deviation for normal distsq
-    sd = 10*torch.eye(2)
 
     # set optimizer
     optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
@@ -552,7 +650,15 @@ def train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, tra
     cooling = lambda alpha: alpha/1.05
 
     # initialize loss function class
-    loss_mod = MEPG_Loss(sd, alpha, discount)
+    loss_mod = MEPG_Loss(sd, alpha, discount, trajectory_length, trajectories_per_epoch)
+
+    """ INITIALIZE STORAGE """
+    cumulateive_reward_plotting = torch.zeros((1, epochs))
+    weights_plotting = torch.zeros((12, epochs))
+    bias_plotting = torch.zeros((2, epochs))
+    weights_grad_plotting = torch.zeros((12, epochs))
+    bias_grad_plotting = torch.zeros((2, epochs))
+    elbo_loss_function_plotting = torch.zeros((1, epochs))
 
     # initialize tensors for grad approximation
     Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
@@ -630,7 +736,7 @@ def train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, tra
         """ COMPUTE POSTERIOR ESTIMATE OF GRADIENT """
         # calculate covariance
         sigma = 1
-        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(G.inverse(),Z))
+        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(FI.inverse(),Z))
         C = (K + sigma*torch.eye(K.size()[0])).inverse()
         ZC = torch.mm(Z, C)
         posterior_g = torch.mv(ZC,Y)
@@ -656,24 +762,31 @@ def train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, tra
             print("current gradients: ")
             print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
 
+        """ ADD RELEVENT INFO TO STORAGE"""
+        cumulateive_reward_plotting[:, epoch] = avg
+        weights_plotting[:, epoch] = reg_model.linear.weight.reshape(-1)
+        bias_plotting[:, epoch] = reg_model.linear.bias.reshape(-1)
+        elbo_loss_function_plotting[:, epoch] = loss
+        weights_grad_plotting[:, epoch] = reg_model.linear.weight.grad.reshape(-1)
+        bias_grad_plotting[:, epoch] = reg_model.linear.bias.grad.reshape(-1)
+
     # print and return
     print("Algorithm complete!")
-    return reg_model.linear.weight, reg_model.linear.bias
+    return reg_model.linear.weight, reg_model.linear.bias, \
+    [cumulateive_reward_plotting.detach(),  weights_plotting.detach(), bias_plotting.detach(), elbo_loss_function_plotting.detach(), \
+    weights_grad_plotting.detach(), bias_grad_plotting.detach()]
 
-def train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length):
+def train_bayesian_natural_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length):
 
     """ INITIALIZATIONS """
     # initial variables for regression model
     reg_model = LinearRegressionModel(6,2)
     # set bias to zero in order to give the model better start
     reg_model.linear.bias.data = 0*reg_model.linear.bias.data
-    reg_model.linear.weight.data = 0.01*reg_model.linear.weight.data
+    reg_model.linear.weight.data = 0.1*reg_model.linear.weight.data
 
     print("Max entorpy natural policy gradients initialized!")
     print('Timestamp: {:%Y-%b-%d %H:%M:%S}'.format(datetime.datetime.now()))
-
-    # set standard deviation for normal distsq
-    sd = 10*torch.eye(2)
 
     # set optimizer
     optimizer = torch.optim.Adam(reg_model.parameters(), lr=1e-2)
@@ -691,7 +804,15 @@ def train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_ep
     cooling = lambda alpha: alpha/1.05
 
     # initialize loss function class
-    loss_mod = MEPG_Loss(sd, alpha, discount)
+    loss_mod = MEPG_Loss(sd, alpha, discount, trajectory_length, trajectories_per_epoch)
+
+    """ INITIALIZE STORAGE """
+    cumulateive_reward_plotting = torch.zeros((1, epochs))
+    weights_plotting = torch.zeros((12, epochs))
+    bias_plotting = torch.zeros((2, epochs))
+    weights_grad_plotting = torch.zeros((12, epochs))
+    bias_grad_plotting = torch.zeros((2, epochs))
+    elbo_loss_function_plotting = torch.zeros((1, epochs))
 
     # initialize tensors for grad approximation
     Z = torch.zeros((14, trajectories_per_epoch), requires_grad=False)
@@ -769,7 +890,7 @@ def train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_ep
         """ COMPUTE POSTERIOR ESTIMATE OF GRADIENT """
         # calculate covariance
         sigma = 1
-        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(G.inverse(),Z))
+        K = torch.mm(torch.transpose(Z, 0, 1), torch.mm(FI.inverse(),Z))
         C = (K + sigma*torch.eye(K.size()[0])).inverse()
         ZC = torch.mm(Z, C)
         posterior_g = torch.mv(ZC,Y)
@@ -801,9 +922,19 @@ def train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_ep
             print("current gradients: ")
             print(reg_model.linear.weight.grad, reg_model.linear.bias.grad)
 
+        """ ADD RELEVENT INFO TO STORAGE"""
+        cumulateive_reward_plotting[:, epoch] = avg
+        weights_plotting[:, epoch] = reg_model.linear.weight.reshape(-1)
+        bias_plotting[:, epoch] = reg_model.linear.bias.reshape(-1)
+        elbo_loss_function_plotting[:, epoch] = loss
+        weights_grad_plotting[:, epoch] = reg_model.linear.weight.grad.reshape(-1)
+        bias_grad_plotting[:, epoch] = reg_model.linear.bias.grad.reshape(-1)
+
     # print and return
     print("Algorithm complete!")
-    return reg_model.linear.weight, reg_model.linear.bias
+    return reg_model.linear.weight, reg_model.linear.bias, \
+    [cumulateive_reward_plotting.detach(),  weights_plotting.detach(), bias_plotting.detach(), elbo_loss_function_plotting.detach(), \
+    weights_grad_plotting.detach(), bias_grad_plotting.detach()]
 
 """ These are global parameters to be used later """
 STATE_DIMENSIONS = 6
@@ -811,78 +942,97 @@ ACTION_DIMENSIONS = 2
 STATE_ACTION_DIMENSIONS = 8
 
 def main():
-
+    # Optimal W is sth like [-1 0; 0  -1; 1 0; 0 1; .. ; ..] and bias should almost be 0.
     """ INITIALIZATIONS """
     # initialization stuff
-    epochs = 50
-    trajectories_per_epoch = 200
-    trajectory_length = 10
-    discount = 0.8
+    epochs = 1000
+    trajectories_per_epoch = 50
+    trajectory_length = 25
+    discount = 0.5
+    sd = 10*torch.eye(2)
+    # and to load the session again:
 
     """ MAX ENTROPY POLICY GRADIENTS WITH BASELINE APPROXIMATION """
     # lets try this with max ent policy gradients
-    W, b = train_max_ent_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
-    print(W, b)
+    W, b, plot_info = train_max_ent_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length)
+
     # set up simulation
-    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    policy = lambda state: torch.distributions.MultivariateNormal(torch.mv(W,state).detach() + b.detach(), sd).sample()
     sim = simulator(500, policy)
 
+
+    # save file
+    filename = 'policy_gradients_epochs_' + str(epochs) + '_sims_' +str(trajectories_per_epoch) + '_T_' + str(trajectory_length) + '_d_' + str(discount) + '.pkl'
+    # save variables
+    dill.dump_session(filename)
+
+    # plot info
+    plot_agent_information(plot_info)
     # create a simulation or 10
     input("Press Enter to see what the trajectories look like...")
     for i in range(3):
         sim.render_trajectory()
+
 
     """ MAX ENTROPY NATURAL POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
     # lets try this with bayesian / natural policy gradients
-    W, b = train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
-    print(W, b)
+    W, b, plot_info = train_natural_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length)
+
     # set up simulation
-    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    policy = lambda state: torch.distributions.MultivariateNormal(torch.mv(W,state).detach() + b.detach(), sd).sample()
     sim = simulator(500, policy)
 
-    # create a simulation or 10
-    input("Press Enter to see what the trajectories look like...")
-    for i in range(3):
-        sim.render_trajectory()
+    # save file
+    filename = 'natural_policy_gradients_' + str(epochs) + '_sims_' +str(trajectories_per_epoch) + '_T_' + str(trajectory_length) + '_d_' + str(discount) + '.pkl'
+    # save variables
+    dill.dump_session(filename)
+
+    # # plot info
+    # plot_agent_information(plot_info)
+    # # create a simulation or 10
+    # input("Press Enter to see what the trajectories look like...")
+    # for i in range(3):
+    #     sim.render_trajectory()
 
     """ BAYESIAN MAX ENTROPY NATURAL POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
     # lets try this with bayesian / natural policy gradients
-    W, b = train_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
-    print(W, b)
+    W, b, plot_info = train_natural_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length)
+
     # set up simulation
-    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    policy = lambda state: torch.distributions.MultivariateNormal(torch.mv(W,state).detach() + b.detach(), sd).sample()
     sim = simulator(500, policy)
 
-    # create a simulation or 10
-    input("Press Enter to see what the trajectories look like...")
-    for i in range(3):
-        sim.render_trajectory()
+    # save file
+    filename = 'bayesian_policy_gradients' + str(epochs) + '_sims_' +str(trajectories_per_epoch) + '_T_' + str(trajectory_length) + '_d_' + str(discount) + '.pkl'
+    # save variables
+    dill.dump_session(filename)
+
+    # # plot info
+    # plot_agent_information(plot_info)
+    # # create a simulation or 10
+    # input("Press Enter to see what the trajectories look like...")
+    # for i in range(3):
+    #     sim.render_trajectory()
 
     """ BAYESIAN MAX ENTROPY BAYESIAN POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
     # lets try this with bayesian / natural policy gradients
-    W, b = train_bayesian_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
-    print(W, b)
+    W, b, plot_info = train_bayesian_policy_gradient(sd, epochs, discount, trajectories_per_epoch, trajectory_length)
+
     # set up simulation
-    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
+    policy = lambda state: torch.distributions.MultivariateNormal(torch.mv(W,state).detach() + b.detach(), sd).sample()
     sim = simulator(500, policy)
 
-    # create a simulation or 10
-    input("Press Enter to see what the trajectories look like...")
-    for i in range(3):
-        sim.render_trajectory()
+    # save file
+    filename = 'bayesian_natural_policy_gradients' + str(epochs) + '_sims_' +str(trajectories_per_epoch) + '_T_' + str(trajectory_length) + '_d_' + str(discount) + '.pkl'
+    # save variables
+    dill.dump_session(filename)
 
-    """ BAYESIAN MAX ENTROPY BAYESIAN NATURAL POLICY GRADIENTS WITH BASELINE APPROXIMATION"""
-    # lets try this with bayesian / natural policy gradients
-    W, b = train_bayesian_natural_policy_gradient(epochs, discount, trajectories_per_epoch, trajectory_length)
-    print(W, b)
-    # set up simulation
-    policy = lambda state: dist.MultivariateNormal(torch.mv(W,state) + b, 10*torch.eye(2)).sample()
-    sim = simulator(500, policy)
-
-    # create a simulation or 10
-    input("Press Enter to see what the trajectories look like...")
-    for i in range(3):
-        sim.render_trajectory()
+    # # plot info
+    # plot_agent_information(plot_info)
+    # # create a simulation or 10
+    # input("Press Enter to see what the trajectories look like...")
+    # for i in range(3):
+    #     sim.render_trajectory()
 
 if __name__ == '__main__':
     main()
